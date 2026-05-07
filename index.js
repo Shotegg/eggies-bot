@@ -21,6 +21,7 @@ const {
   getReminders,
   saveReminders
 } = require('./storage');
+const { startKeepAlive } = require('./keepAlive');
 
 const token = process.env.DISCORD_TOKEN;
 const leaderIds = (process.env.LEADER_IDS || '')
@@ -36,6 +37,8 @@ if (!token) {
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
+
+startKeepAlive();
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
