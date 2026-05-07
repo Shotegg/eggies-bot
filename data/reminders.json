@@ -1,0 +1,37 @@
+[
+  {
+    "userId": "612726128137863169",
+    "channelId": "1499405743365816372",
+    "eventKey": "bear 2",
+    "eventTitle": "bear 2",
+    "targetTime": 1778152200000,
+    "sent": true,
+    "active": false,
+    "lastNotifiedOccurrenceMs": null
+  },
+  {
+    "userId": "612726128137863169",
+    "channelId": "1499405743365816372",
+    "eventKey": "bear 2",
+    "eventTitle": "bear 2",
+    "remindMinutesBefore": 20,
+    "targetTime": 1778153340000,
+    "sent": true,
+    "active": false,
+    "lastNotifiedOccurrenceMs": null
+  },
+  {
+    "userId": "612726128137863169",
+    "channelId": "1499405743365816372",
+    "eventKey": "bear 2",
+    "active": true,
+    "lastNotifiedOccurrenceMs": null
+  },
+  {
+    "userId": "1434203462941278418",
+    "channelId": "1499405743365816372",
+    "eventKey": "bear 1",
+    "active": true,
+    "lastNotifiedOccurrenceMs": null
+  }
+]

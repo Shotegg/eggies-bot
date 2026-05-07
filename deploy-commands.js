@@ -13,8 +13,23 @@ if (!token || !clientId || !guildId) {
 
 const commands = [
   new SlashCommandBuilder()
-    .setName('ping')
-    .setDescription('Replies with Pong!')
+    .setName('help')
+    .setDescription('Show how to use the bot')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('events')
+    .setDescription('List all saved events')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('event')
+    .setDescription('Show details for a specific event')
+    .addStringOption((option) =>
+      option
+        .setName('name')
+        .setDescription('Event key (example: castle_war)')
+        .setAutocomplete(true)
+        .setRequired(true)
+    )
     .toJSON()
 ];
 
