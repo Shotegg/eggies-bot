@@ -23,6 +23,7 @@ const {
 const { startKeepAlive } = require('./keepAlive');
 
 const token = process.env.DISCORD_TOKEN;
+const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
 const leaderIds = (process.env.LEADER_IDS || '')
   .split(',')
   .map((id) => id.trim())
@@ -362,7 +363,7 @@ async function handleButton(interaction) {
 
   reminders.push({
     userId: interaction.user.id,
-    channelId: interaction.channelId,
+    channelId: reminderChannelId,
     eventKey,
     active: true,
     lastNotifiedOccurrenceMs: null
@@ -513,10 +514,10 @@ async function processReminders(botClient) {
     if (!notify) continue;
     if (reminder.lastNotifiedOccurrenceMs === notify.occurrenceMs) continue;
 
-    const batchKey = `${reminder.channelId}|${reminder.eventKey}|${notify.occurrenceMs}|${notify.remindMinutesBefore}`;
+    const batchKey = `${reminderChannelId}|${reminder.eventKey}|${notify.occurrenceMs}|${notify.remindMinutesBefore}`;
     if (!batches.has(batchKey)) {
       batches.set(batchKey, {
-        channelId: reminder.channelId,
+        channelId: reminderChannelId,
         eventKey: reminder.eventKey,
         eventTitle: event.title,
         remindMinutesBefore: notify.remindMinutesBefore,
