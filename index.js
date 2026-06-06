@@ -537,7 +537,8 @@ async function processReminders(botClient) {
 
       const mentions = [...new Set(batch.userIds)].map((id) => `<@${id}>`).join(' ');
       const unsubscribeRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`unsub:${batch.eventKey}`).setLabel("Don't remind me").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId(`unsub:${batch.eventKey}`).setLabel("Don't remind me").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`info:${batch.eventKey}`).setLabel('Info').setStyle(ButtonStyle.Secondary)
       );
 
       await channel.send({
