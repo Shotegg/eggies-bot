@@ -35,7 +35,7 @@ if (!token) {
   process.exit(1);
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 startKeepAlive();
 
 client.once(Events.ClientReady, (readyClient) => {
@@ -105,6 +105,42 @@ function buildEventText(event, showKey = true) {
 
 function findSubscription(reminders, userId, eventKey) {
   return reminders.find((r) => r.userId === userId && r.eventKey === eventKey && r.active !== false);
+}
+
+function buildReminderActionRow(eventKey) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`unsub:${eventKey}`).setLabel("Don't remind me").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`info:${eventKey}`).setLabel('Info').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function buildSubscribeAllMembersRow(eventKey) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`allremind:${eventKey}`).setLabel('Subscribe all members').setStyle(ButtonStyle.Primary)
+  );
+}
+
+function chunkUserIdsForReminder(userIds, suffix) {
+  const chunks = [];
+  let current = [];
+  let currentLength = suffix.length;
+
+  for (const userId of userIds) {
+    const mention = `<@${userId}>`;
+    const extraLength = mention.length + (current.length > 0 ? 1 : 0);
+
+    if (current.length > 0 && currentLength + extraLength > 1900) {
+      chunks.push(current);
+      current = [];
+      currentLength = suffix.length;
+    }
+
+    current.push(userId);
+    currentLength += mention.length + (current.length > 1 ? 1 : 0);
+  }
+
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 function getOccurrenceToNotify(event, nowMs) {
@@ -244,6 +280,11 @@ async function handleChatCommand(interaction) {
 
     const infoButton = new ButtonBuilder().setCustomId(`info:${event.key}`).setLabel('Info').setStyle(ButtonStyle.Secondary);
     const row = new ActionRowBuilder().addComponents(remindButton, infoButton);
+    if (leader) {
+      row.addComponents(
+        new ButtonBuilder().setCustomId(`allremind:${event.key}`).setLabel('Subscribe all members').setStyle(ButtonStyle.Primary)
+      );
+    }
 
     await interaction.reply({
       content: buildEventText(event, leader),
@@ -341,6 +382,64 @@ async function handleSelectMenu(interaction) {
   return showEditValueModal(interaction, selectedField);
 }
 
+async function subscribeAllMembersToEvent(interaction, eventKey) {
+  if (!isLeader(interaction.user.id)) {
+    await interaction.reply({ content: 'Only leaders can use this action.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (!interaction.guild) {
+    await interaction.reply({ content: 'This action can only be used in a server.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const event = await getEventByKey(eventKey);
+  if (!event || !event.nextAt) {
+    await interaction.reply({ content: 'Event or event time is missing.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const members = await interaction.guild.members.fetch();
+  const memberIds = members
+    .filter((member) => !member.user.bot)
+    .map((member) => member.user.id);
+
+  const reminders = await getReminders();
+  let added = 0;
+  let reactivated = 0;
+
+  for (const userId of memberIds) {
+    const existing = reminders.find((reminder) => reminder.userId === userId && reminder.eventKey === eventKey);
+
+    if (existing) {
+      if (existing.active === false) {
+        existing.active = true;
+        existing.channelId = reminderChannelId;
+        existing.lastNotifiedOccurrenceMs = null;
+        reactivated += 1;
+      }
+      continue;
+    }
+
+    reminders.push({
+      userId,
+      channelId: reminderChannelId,
+      eventKey,
+      active: true,
+      lastNotifiedOccurrenceMs: null
+    });
+    added += 1;
+  }
+
+  if (added > 0 || reactivated > 0) await saveReminders(reminders);
+
+  await interaction.editReply({
+    content: `Subscribed ${added} members to '${event.title}'. Reactivated ${reactivated} existing unsubscribed members. Total server members checked: ${memberIds.length}.`
+  });
+}
+
 async function handleButton(interaction) {
   const [action, eventKey] = interaction.customId.split(':');
 
@@ -359,6 +458,8 @@ async function handleButton(interaction) {
     await interaction.update(buildHelpResponse(interaction.user.id));
     return;
   }
+
+  if (action === 'allremind') return subscribeAllMembersToEvent(interaction, eventKey);
 
   if (action === 'unsub') {
     const reminders = await getReminders();
@@ -435,7 +536,11 @@ async function handleAddModal(interaction) {
 
   events.push({ key, title: key, description: '', info: '', nextAt, repeatHours: 0, remindMinutesBefore: 60 });
   await saveEvents(events);
-  await interaction.reply({ content: `Event '${key}' created.`, flags: MessageFlags.Ephemeral });
+  await interaction.reply({
+    content: `Event '${key}' created.`,
+    components: [buildSubscribeAllMembersRow(key)],
+    flags: MessageFlags.Ephemeral
+  });
 }
 
 async function handleRemoveModal(interaction) {
@@ -577,16 +682,18 @@ async function processReminders(botClient) {
       const channel = await botClient.channels.fetch(batch.channelId);
       if (!channel || !channel.isTextBased()) continue;
 
-      const mentions = [...new Set(batch.userIds)].map((id) => `<@${id}>`).join(' ');
-      const unsubscribeRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`unsub:${batch.eventKey}`).setLabel("Don't remind me").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(`info:${batch.eventKey}`).setLabel('Info').setStyle(ButtonStyle.Secondary)
-      );
+      const uniqueUserIds = [...new Set(batch.userIds)];
+      const suffix = ` **${batch.eventTitle}** in ${batch.remindMinutesBefore} minutes`;
+      const userIdChunks = chunkUserIdsForReminder(uniqueUserIds, suffix);
 
-      await channel.send({
-        content: `${mentions} **${batch.eventTitle}** in ${batch.remindMinutesBefore} minutes`,
-        components: [unsubscribeRow]
-      });
+      for (const userIdChunk of userIdChunks) {
+        const mentions = userIdChunk.map((id) => `<@${id}>`).join(' ');
+        await channel.send({
+          content: `${mentions}${suffix}`,
+          allowedMentions: { users: userIdChunk },
+          components: [buildReminderActionRow(batch.eventKey)]
+        });
+      }
     } catch (error) {
       console.error('Failed to send batch reminder:', error);
     }
