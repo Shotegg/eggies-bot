@@ -28,6 +28,7 @@ const leaderIds = (process.env.LEADER_IDS || '')
   .split(',')
   .map((id) => id.trim())
   .filter(Boolean);
+const debugMemberUserIds = new Set();
 
 if (!token) {
   console.error('Missing DISCORD_TOKEN in .env');
@@ -129,8 +130,42 @@ function getOccurrenceToNotify(event, nowMs) {
   return { occurrenceMs, remindMinutesBefore: remindMinutes };
 }
 
-function isLeader(userId) {
+function isHardcodedLeader(userId) {
   return leaderIds.includes(userId);
+}
+
+function isLeader(userId) {
+  return isHardcodedLeader(userId) && !debugMemberUserIds.has(userId);
+}
+
+function buildHelpContent(userId) {
+  return [
+    '**Available commands**',
+    '`/help` show this message',
+    '`/events` list saved events',
+    '`/event name:<event title>` show next time + actions',
+    isLeader(userId) ? 'Role: Leader' : 'Role: Member'
+  ].join('\n');
+}
+
+function buildDebugRoleRow(userId) {
+  const nextRole = isLeader(userId) ? 'Member' : 'Leader';
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('debugrole:toggle').setLabel(`View as ${nextRole}`).setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function buildHelpResponse(userId) {
+  const response = {
+    content: buildHelpContent(userId),
+    flags: MessageFlags.Ephemeral
+  };
+
+  if (isHardcodedLeader(userId)) {
+    response.components = [buildDebugRoleRow(userId)];
+  }
+
+  return response;
 }
 
 function buildLeaderRow() {
@@ -171,16 +206,7 @@ async function handleAutocomplete(interaction) {
 
 async function handleChatCommand(interaction) {
   if (interaction.commandName === 'help') {
-    await interaction.reply({
-      content: [
-        '**Available commands**',
-        '`/help` show this message',
-        '`/events` list saved events',
-        '`/event name:<event title>` show next time + actions',
-        isLeader(interaction.user.id) ? 'Role: Leader' : 'Role: Member'
-      ].join('\n'),
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.reply(buildHelpResponse(interaction.user.id));
     return;
   }
 
@@ -317,6 +343,22 @@ async function handleSelectMenu(interaction) {
 
 async function handleButton(interaction) {
   const [action, eventKey] = interaction.customId.split(':');
+
+  if (action === 'debugrole') {
+    if (!isHardcodedLeader(interaction.user.id)) {
+      await interaction.reply({ content: 'Only hardcoded leaders can use this debug action.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (debugMemberUserIds.has(interaction.user.id)) {
+      debugMemberUserIds.delete(interaction.user.id);
+    } else {
+      debugMemberUserIds.add(interaction.user.id);
+    }
+
+    await interaction.update(buildHelpResponse(interaction.user.id));
+    return;
+  }
 
   if (action === 'unsub') {
     const reminders = await getReminders();
