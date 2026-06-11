@@ -232,7 +232,12 @@ async function recordGiftCodeResult(playerId, code, result) {
   const errCode = raw.err_code == null ? null : String(raw.err_code);
   const status = result.ok
     ? 'success'
-    : ({ 40002: 'already_redeemed', 40003: 'expired', 40005: 'already_redeemed' }[errCode] || 'failed');
+    : ({
+      40002: 'already_redeemed',
+      40003: 'expired',
+      40005: 'already_redeemed',
+      40008: 'requirements_unmet'
+    }[errCode] || 'failed');
 
   await saveGiftCodeRedemption({
     playerId,
@@ -270,7 +275,7 @@ async function syncGiftCodesForPlayer(playerId) {
 
   const players = await getGiftCodePlayers();
   const redemptions = await getGiftCodeRedemptions();
-  const terminalStatuses = new Set(['success', 'already_redeemed', 'expired']);
+  const terminalStatuses = new Set(['success', 'already_redeemed', 'expired', 'requirements_unmet']);
   const completed = new Set(redemptions.filter((row) => terminalStatuses.has(row.status)).map((row) => redemptionKey(row.player_id, row.code)));
   const attempted = [];
   const skipped = [];
@@ -313,18 +318,26 @@ function formatGiftCodeSyncResult(result) {
 
   const successes = result.attempted.filter((item) => item.ok);
   const failures = result.attempted.filter((item) => !item.ok);
+  const byMessage = new Map();
+  for (const item of failures) {
+    byMessage.set(item.message, (byMessage.get(item.message) || 0) + 1);
+  }
   const lines = [
     `Saved player: ${result.player.nickname || 'Unknown'} (${result.player.playerId}) | State: ${result.player.kid || 'unknown'} | Town Center: ${result.player.stoveLv || 'unknown'}`,
     `Active codes found: ${result.discoveredCodes.map((item) => item.code).join(', ') || 'none'}`,
-    `Redeem attempts: ${result.attempted.length} | Success: ${successes.length} | Failed: ${failures.length} | Skipped already successful: ${result.skipped.length}`
+    `Redeem attempts: ${result.attempted.length} | Success: ${successes.length} | Failed: ${failures.length} | Skipped saved results: ${result.skipped.length}`
   ];
 
-  for (const item of result.attempted.slice(0, 12)) {
-    lines.push(`${item.ok ? 'OK' : 'FAIL'} ${item.code} -> ${item.nickname || item.playerId}: ${item.message}`);
+  if (successes.length > 0) {
+    const successCodes = [...new Set(successes.map((item) => item.code))].join(', ');
+    lines.push(`Successful codes: ${successCodes}`);
   }
 
-  if (result.attempted.length > 12) {
-    lines.push(`...and ${result.attempted.length - 12} more attempts.`);
+  if (byMessage.size > 0) {
+    lines.push('Failure summary:');
+    for (const [message, count] of byMessage) {
+      lines.push(`- ${message}: ${count}`);
+    }
   }
 
   return lines.join('\n');
