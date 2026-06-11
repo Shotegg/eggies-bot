@@ -23,6 +23,7 @@ const {
   getGiftCodePlayers,
   upsertGiftCodes,
   getGiftCodeRedemptions,
+  getGiftCodeRedemption,
   saveGiftCodeRedemption
 } = require('./storage');
 const { startKeepAlive } = require('./keepAlive');
@@ -35,6 +36,9 @@ const leaderIds = (process.env.LEADER_IDS || '')
   .map((id) => id.trim())
   .filter(Boolean);
 const debugMemberUserIds = new Set();
+const giftCodeTerminalStatuses = new Set(['success', 'already_redeemed', 'expired', 'requirements_unmet']);
+const giftCodeRetryDelayMs = Number(process.env.GIFT_CODE_RETRY_DELAY_MS || 45000);
+let giftCodeWorkerRunning = false;
 
 if (!token) {
   console.error('Missing DISCORD_TOKEN in .env');
@@ -227,6 +231,10 @@ function redemptionKey(playerId, code) {
   return `${String(playerId)}::${String(code).toLowerCase()}`;
 }
 
+function isGiftCodeTerminalStatus(status) {
+  return giftCodeTerminalStatuses.has(status);
+}
+
 async function recordGiftCodeResult(playerId, code, result) {
   const raw = result.redeem?.data || result.player?.data || {};
   const errCode = raw.err_code == null ? null : String(raw.err_code);
@@ -249,11 +257,60 @@ async function recordGiftCodeResult(playerId, code, result) {
 }
 
 async function redeemCodeForPlayer(playerId, code) {
+  const existing = await getGiftCodeRedemption(playerId, code);
+  if (existing && isGiftCodeTerminalStatus(existing.status)) {
+    return {
+      ok: false,
+      skipped: true,
+      message: `Skipped saved result: ${existing.status}`,
+      playerInfo: { playerId: String(playerId), nickname: '', kid: null, stoveLv: null }
+    };
+  }
+
   const result = await redeemGiftCode(playerId, code);
   const info = extractPlayerInfo(result.player, playerId);
   if (result.player?.ok) await upsertGiftCodePlayer(info);
   await recordGiftCodeResult(info.playerId, code, result);
   return { ...result, playerInfo: info };
+}
+
+async function runGiftCodeWorker() {
+  if (giftCodeWorkerRunning) return;
+  giftCodeWorkerRunning = true;
+
+  try {
+    while (true) {
+      const players = await getGiftCodePlayers();
+      const codes = await getActiveGiftCodes();
+      const redemptions = await getGiftCodeRedemptions();
+      const terminal = new Set(redemptions.filter((row) => isGiftCodeTerminalStatus(row.status)).map((row) => redemptionKey(row.player_id, row.code)));
+      let didWork = false;
+
+      for (const code of codes) {
+        for (const player of players) {
+          if (terminal.has(redemptionKey(player.playerId, code.code))) continue;
+
+          const result = await redeemCodeForPlayer(player.playerId, code.code);
+          didWork = !result.skipped;
+          await sleep(giftCodeRetryDelayMs);
+          break;
+        }
+        if (didWork) break;
+      }
+
+      if (!didWork) break;
+    }
+  } catch (error) {
+    console.error('Gift code background worker failed:', error);
+  } finally {
+    giftCodeWorkerRunning = false;
+  }
+}
+
+function startGiftCodeWorker() {
+  setTimeout(() => {
+    runGiftCodeWorker().catch((error) => console.error('Gift code background worker failed:', error));
+  }, 0);
 }
 
 async function syncGiftCodesForPlayer(playerId) {
@@ -275,10 +332,10 @@ async function syncGiftCodesForPlayer(playerId) {
 
   const players = await getGiftCodePlayers();
   const redemptions = await getGiftCodeRedemptions();
-  const terminalStatuses = new Set(['success', 'already_redeemed', 'expired', 'requirements_unmet']);
-  const completed = new Set(redemptions.filter((row) => terminalStatuses.has(row.status)).map((row) => redemptionKey(row.player_id, row.code)));
+  const completed = new Set(redemptions.filter((row) => isGiftCodeTerminalStatus(row.status)).map((row) => redemptionKey(row.player_id, row.code)));
   const attempted = [];
   const skipped = [];
+  let pending = 0;
 
   for (const code of discoveredCodes) {
     for (const player of players) {
@@ -286,19 +343,11 @@ async function syncGiftCodesForPlayer(playerId) {
         skipped.push({ playerId: player.playerId, code: code.code });
         continue;
       }
-
-      const result = await redeemCodeForPlayer(player.playerId, code.code);
-      attempted.push({
-        playerId: player.playerId,
-        nickname: result.playerInfo.nickname || player.nickname || '',
-        code: code.code,
-        ok: result.ok,
-        message: result.message
-      });
-
-      await sleep(1500);
+      pending += 1;
     }
   }
+
+  startGiftCodeWorker();
 
   return {
     ok: true,
@@ -306,7 +355,8 @@ async function syncGiftCodesForPlayer(playerId) {
     player: registered.info,
     discoveredCodes,
     attempted,
-    skipped
+    skipped,
+    pending
   };
 }
 
@@ -325,7 +375,9 @@ function formatGiftCodeSyncResult(result) {
   const lines = [
     `Saved player: ${result.player.nickname || 'Unknown'} (${result.player.playerId}) | State: ${result.player.kid || 'unknown'} | Town Center: ${result.player.stoveLv || 'unknown'}`,
     `Active codes found: ${result.discoveredCodes.map((item) => item.code).join(', ') || 'none'}`,
-    `Redeem attempts: ${result.attempted.length} | Success: ${successes.length} | Failed: ${failures.length} | Skipped saved results: ${result.skipped.length}`
+    `Queued pending redemptions: ${result.pending}`,
+    `Skipped saved results: ${result.skipped.length}`,
+    `Background worker: ${giftCodeWorkerRunning ? 'already running' : 'started'} | Delay: ${Math.round(giftCodeRetryDelayMs / 1000)}s/request`
   ];
 
   if (successes.length > 0) {

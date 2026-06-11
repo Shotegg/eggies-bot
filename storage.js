@@ -222,6 +222,18 @@ async function getGiftCodeRedemptions() {
   return data || [];
 }
 
+async function getGiftCodeRedemption(playerId, code) {
+  const { data, error } = await supabase
+    .from('gift_code_redemptions')
+    .select('player_id,code,status')
+    .eq('player_id', String(playerId))
+    .eq('code', code)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
 async function saveGiftCodeRedemption(result) {
   const { error } = await supabase
     .from('gift_code_redemptions')
@@ -248,5 +260,6 @@ module.exports = {
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemptions,
+  getGiftCodeRedemption,
   saveGiftCodeRedemption
 };
