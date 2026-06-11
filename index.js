@@ -313,9 +313,13 @@ function startGiftCodeWorker() {
   }, 0);
 }
 
-async function syncGiftCodesForPlayer(playerId) {
-  const registered = await registerGiftCodePlayer(playerId);
-  if (!registered.ok) {
+async function syncGiftCodes(playerId) {
+  let registered = null;
+  if (playerId) {
+    registered = await registerGiftCodePlayer(playerId);
+  }
+
+  if (registered && !registered.ok) {
     return {
       ok: false,
       message: 'Player lookup failed.',
@@ -331,6 +335,19 @@ async function syncGiftCodesForPlayer(playerId) {
   await upsertGiftCodes(discoveredCodes);
 
   const players = await getGiftCodePlayers();
+  if (players.length === 0) {
+    return {
+      ok: false,
+      message: 'No saved players yet. Run /giftcode with player_id first.',
+      playerId,
+      player: null,
+      discoveredCodes,
+      attempted: [],
+      skipped: [],
+      pending: 0
+    };
+  }
+
   const redemptions = await getGiftCodeRedemptions();
   const completed = new Set(redemptions.filter((row) => isGiftCodeTerminalStatus(row.status)).map((row) => redemptionKey(row.player_id, row.code)));
   const attempted = [];
@@ -351,8 +368,8 @@ async function syncGiftCodesForPlayer(playerId) {
 
   return {
     ok: true,
-    playerId: registered.info.playerId,
-    player: registered.info,
+    playerId: registered?.info?.playerId || null,
+    player: registered?.info || null,
     discoveredCodes,
     attempted,
     skipped,
@@ -373,7 +390,9 @@ function formatGiftCodeSyncResult(result) {
     byMessage.set(item.message, (byMessage.get(item.message) || 0) + 1);
   }
   const lines = [
-    `Saved player: ${result.player.nickname || 'Unknown'} (${result.player.playerId}) | State: ${result.player.kid || 'unknown'} | Town Center: ${result.player.stoveLv || 'unknown'}`,
+    result.player
+      ? `Saved player: ${result.player.nickname || 'Unknown'} (${result.player.playerId}) | State: ${result.player.kid || 'unknown'} | Town Center: ${result.player.stoveLv || 'unknown'}`
+      : 'Processing saved players.',
     `Active codes found: ${result.discoveredCodes.map((item) => item.code).join(', ') || 'none'}`,
     `Queued pending redemptions: ${result.pending}`,
     `Skipped saved results: ${result.skipped.length}`,
@@ -473,15 +492,22 @@ async function handleChatCommand(interaction) {
   }
 
   if (interaction.commandName === 'giftcode') {
-    const playerId = interaction.options.getString('player_id', true).trim();
+    const playerId = interaction.options.getString('player_id', false)?.trim();
     const code = interaction.options.getString('code', false)?.trim();
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     try {
       if (!code) {
-        const result = await syncGiftCodesForPlayer(playerId);
+        const result = await syncGiftCodes(playerId);
         await interaction.editReply(formatGiftCodeSyncResult(result));
+        return;
+      }
+
+      if (!playerId) {
+        await upsertGiftCodes([{ code, source: 'manual-command', expiresAt: null, active: true }]);
+        startGiftCodeWorker();
+        await interaction.editReply(`Saved code ${code} and started background redeem for saved players.`);
         return;
       }
 

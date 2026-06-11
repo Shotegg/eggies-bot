@@ -37,8 +37,8 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName('player_id')
-        .setDescription('Kingshot Player ID')
-        .setRequired(true)
+        .setDescription('Kingshot Player ID. Leave empty to process saved players.')
+        .setRequired(false)
     )
     .addStringOption((option) =>
       option
