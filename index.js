@@ -21,6 +21,7 @@ const {
   saveReminders
 } = require('./storage');
 const { startKeepAlive } = require('./keepAlive');
+const { redeemGiftCode } = require('./giftCodes');
 
 const token = process.env.DISCORD_TOKEN;
 const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
@@ -180,8 +181,9 @@ function buildHelpContent(userId) {
     '`/help` show this message',
     '`/events` list saved events',
     '`/event name:<event title>` show next time + actions',
+    isLeader(userId) ? '`/giftcode player_id:<id> code:<code>` redeem a Kingshot gift code' : null,
     isLeader(userId) ? 'Role: Leader' : 'Role: Member'
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function buildDebugRoleRow(userId) {
@@ -258,6 +260,37 @@ async function handleChatCommand(interaction) {
 
     if (leader) response.components = [buildLeaderRow()];
     await interaction.reply(response);
+    return;
+  }
+
+  if (interaction.commandName === 'giftcode') {
+    if (!isLeader(interaction.user.id)) {
+      await interaction.reply({ content: 'Only leaders can use this command.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const playerId = interaction.options.getString('player_id', true).trim();
+    const code = interaction.options.getString('code', true).trim();
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    try {
+      const result = await redeemGiftCode(playerId, code);
+      const player = result.player?.data?.data;
+      const playerLine = player
+        ? `Player: ${player.nickname || 'Unknown'} (${player.fid}) | State: ${player.kid || 'unknown'} | Town Center: ${player.stove_lv || 'unknown'}`
+        : `Player ID: ${playerId}`;
+      const raw = result.redeem?.data || result.player?.data;
+      const statusLine = result.ok ? 'Status: Redeemed successfully.' : `Status: ${result.message}`;
+      const codeLine = raw?.err_code ? `Error code: ${raw.err_code}` : null;
+
+      await interaction.editReply({
+        content: [statusLine, playerLine, codeLine].filter(Boolean).join('\n')
+      });
+    } catch (error) {
+      console.error('Gift code redeem failed:', error);
+      await interaction.editReply('Gift code request failed due to a network or server error.');
+    }
     return;
   }
 

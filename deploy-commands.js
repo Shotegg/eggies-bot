@@ -30,6 +30,22 @@ const commands = [
         .setAutocomplete(true)
         .setRequired(true)
     )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('giftcode')
+    .setDescription('Redeem a Kingshot gift code for one player')
+    .addStringOption((option) =>
+      option
+        .setName('player_id')
+        .setDescription('Kingshot Player ID')
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('code')
+        .setDescription('Gift code to redeem')
+        .setRequired(true)
+    )
     .toJSON()
 ];
 
