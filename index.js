@@ -18,10 +18,15 @@ const {
   getEventByKey,
   saveEvents,
   getReminders,
-  saveReminders
+  saveReminders,
+  upsertGiftCodePlayer,
+  getGiftCodePlayers,
+  upsertGiftCodes,
+  getGiftCodeRedemptions,
+  saveGiftCodeRedemption
 } = require('./storage');
 const { startKeepAlive } = require('./keepAlive');
-const { redeemGiftCode } = require('./giftCodes');
+const { fetchActiveGiftCodes, lookupPlayer, redeemGiftCode } = require('./giftCodes');
 
 const token = process.env.DISCORD_TOKEN;
 const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
@@ -181,9 +186,148 @@ function buildHelpContent(userId) {
     '`/help` show this message',
     '`/events` list saved events',
     '`/event name:<event title>` show next time + actions',
-    isLeader(userId) ? '`/giftcode player_id:<id> code:<code>` redeem a Kingshot gift code' : null,
+    '`/giftcode player_id:<id> [code]` sync/redeem active Kingshot gift codes',
     isLeader(userId) ? 'Role: Leader' : 'Role: Member'
   ].filter(Boolean).join('\n');
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractPlayerInfo(playerResponse, fallbackPlayerId) {
+  const data = playerResponse?.data?.data;
+  if (!data) {
+    return {
+      playerId: String(fallbackPlayerId),
+      nickname: '',
+      kid: null,
+      stoveLv: null
+    };
+  }
+
+  return {
+    playerId: String(data.fid || fallbackPlayerId),
+    nickname: data.nickname || '',
+    kid: data.kid ?? null,
+    stoveLv: data.stove_lv ?? null
+  };
+}
+
+async function registerGiftCodePlayer(playerId) {
+  const player = await lookupPlayer(playerId);
+  if (!player.ok) return { ok: false, player };
+
+  const info = extractPlayerInfo(player, playerId);
+  await upsertGiftCodePlayer(info);
+  return { ok: true, player, info };
+}
+
+function redemptionKey(playerId, code) {
+  return `${String(playerId)}::${String(code).toLowerCase()}`;
+}
+
+async function recordGiftCodeResult(playerId, code, result) {
+  const raw = result.redeem?.data || result.player?.data || {};
+  const errCode = raw.err_code == null ? null : String(raw.err_code);
+  const status = result.ok
+    ? 'success'
+    : ({ 40002: 'already_redeemed', 40003: 'expired', 40005: 'already_redeemed' }[errCode] || 'failed');
+
+  await saveGiftCodeRedemption({
+    playerId,
+    code,
+    status,
+    message: result.message,
+    errCode
+  });
+}
+
+async function redeemCodeForPlayer(playerId, code) {
+  const result = await redeemGiftCode(playerId, code);
+  const info = extractPlayerInfo(result.player, playerId);
+  if (result.player?.ok) await upsertGiftCodePlayer(info);
+  await recordGiftCodeResult(info.playerId, code, result);
+  return { ...result, playerInfo: info };
+}
+
+async function syncGiftCodesForPlayer(playerId) {
+  const registered = await registerGiftCodePlayer(playerId);
+  if (!registered.ok) {
+    return {
+      ok: false,
+      message: 'Player lookup failed.',
+      playerId,
+      player: registered.player,
+      discoveredCodes: [],
+      attempted: [],
+      skipped: []
+    };
+  }
+
+  const discoveredCodes = await fetchActiveGiftCodes();
+  await upsertGiftCodes(discoveredCodes);
+
+  const players = await getGiftCodePlayers();
+  const redemptions = await getGiftCodeRedemptions();
+  const terminalStatuses = new Set(['success', 'already_redeemed', 'expired']);
+  const completed = new Set(redemptions.filter((row) => terminalStatuses.has(row.status)).map((row) => redemptionKey(row.player_id, row.code)));
+  const attempted = [];
+  const skipped = [];
+
+  for (const code of discoveredCodes) {
+    for (const player of players) {
+      if (completed.has(redemptionKey(player.playerId, code.code))) {
+        skipped.push({ playerId: player.playerId, code: code.code });
+        continue;
+      }
+
+      const result = await redeemCodeForPlayer(player.playerId, code.code);
+      attempted.push({
+        playerId: player.playerId,
+        nickname: result.playerInfo.nickname || player.nickname || '',
+        code: code.code,
+        ok: result.ok,
+        message: result.message
+      });
+
+      await sleep(1500);
+    }
+  }
+
+  return {
+    ok: true,
+    playerId: registered.info.playerId,
+    player: registered.info,
+    discoveredCodes,
+    attempted,
+    skipped
+  };
+}
+
+function formatGiftCodeSyncResult(result) {
+  if (!result.ok) {
+    const errCode = result.player?.data?.err_code;
+    return [`Status: ${result.message}`, errCode ? `Error code: ${errCode}` : null].filter(Boolean).join('\n');
+  }
+
+  const successes = result.attempted.filter((item) => item.ok);
+  const failures = result.attempted.filter((item) => !item.ok);
+  const lines = [
+    `Saved player: ${result.player.nickname || 'Unknown'} (${result.player.playerId}) | State: ${result.player.kid || 'unknown'} | Town Center: ${result.player.stoveLv || 'unknown'}`,
+    `Active codes found: ${result.discoveredCodes.map((item) => item.code).join(', ') || 'none'}`,
+    `Redeem attempts: ${result.attempted.length} | Success: ${successes.length} | Failed: ${failures.length} | Skipped already successful: ${result.skipped.length}`
+  ];
+
+  for (const item of result.attempted.slice(0, 12)) {
+    lines.push(`${item.ok ? 'OK' : 'FAIL'} ${item.code} -> ${item.nickname || item.playerId}: ${item.message}`);
+  }
+
+  if (result.attempted.length > 12) {
+    lines.push(`...and ${result.attempted.length - 12} more attempts.`);
+  }
+
+  return lines.join('\n');
 }
 
 function buildDebugRoleRow(userId) {
@@ -264,25 +408,31 @@ async function handleChatCommand(interaction) {
   }
 
   if (interaction.commandName === 'giftcode') {
-    if (!isLeader(interaction.user.id)) {
-      await interaction.reply({ content: 'Only leaders can use this command.', flags: MessageFlags.Ephemeral });
-      return;
-    }
-
     const playerId = interaction.options.getString('player_id', true).trim();
-    const code = interaction.options.getString('code', true).trim();
+    const code = interaction.options.getString('code', false)?.trim();
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     try {
+      if (!code) {
+        const result = await syncGiftCodesForPlayer(playerId);
+        await interaction.editReply(formatGiftCodeSyncResult(result));
+        return;
+      }
+
+      await upsertGiftCodes([{ code, source: 'manual-command', expiresAt: null, active: true }]);
       const result = await redeemGiftCode(playerId, code);
+      if (result.player?.ok) {
+        await upsertGiftCodePlayer(extractPlayerInfo(result.player, playerId));
+      }
+      await recordGiftCodeResult(playerId, code, result);
       const player = result.player?.data?.data;
       const playerLine = player
         ? `Player: ${player.nickname || 'Unknown'} (${player.fid}) | State: ${player.kid || 'unknown'} | Town Center: ${player.stove_lv || 'unknown'}`
         : `Player ID: ${playerId}`;
       const raw = result.redeem?.data || result.player?.data;
       const statusLine = result.ok ? 'Status: Redeemed successfully.' : `Status: ${result.message}`;
-      const codeLine = raw?.err_code ? `Error code: ${raw.err_code}` : null;
+      const codeLine = !result.ok && raw?.err_code ? `Error code: ${raw.err_code}` : null;
 
       await interaction.editReply({
         content: [statusLine, playerLine, codeLine].filter(Boolean).join('\n')

@@ -43,8 +43,8 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName('code')
-        .setDescription('Gift code to redeem')
-        .setRequired(true)
+        .setDescription('Gift code to redeem. Leave empty to sync active codes.')
+        .setRequired(false)
     )
     .toJSON()
 ];

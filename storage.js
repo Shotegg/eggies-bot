@@ -55,6 +55,25 @@ function mapReminderToRow(reminder) {
   };
 }
 
+function mapGiftCodePlayerRow(row) {
+  return {
+    playerId: row.player_id,
+    nickname: row.nickname || '',
+    kid: row.kid ?? null,
+    stoveLv: row.stove_lv ?? null,
+    active: row.active !== false
+  };
+}
+
+function mapGiftCodeRow(row) {
+  return {
+    code: row.code,
+    source: row.source || '',
+    expiresAt: row.expires_at,
+    active: row.active !== false
+  };
+}
+
 async function getEvents() {
   const { data, error } = await supabase
     .from('events')
@@ -138,10 +157,96 @@ async function saveReminders(reminders) {
   }
 }
 
+async function upsertGiftCodePlayer(player) {
+  const { error } = await supabase
+    .from('gift_code_players')
+    .upsert({
+      player_id: String(player.playerId),
+      nickname: player.nickname || '',
+      kid: player.kid ?? null,
+      stove_lv: player.stoveLv ?? null,
+      active: player.active !== false,
+      last_seen_at: new Date().toISOString()
+    }, { onConflict: 'player_id' });
+
+  if (error) throw error;
+}
+
+async function getGiftCodePlayers() {
+  const { data, error } = await supabase
+    .from('gift_code_players')
+    .select('player_id,nickname,kid,stove_lv,active')
+    .eq('active', true)
+    .order('player_id', { ascending: true });
+
+  if (error) throw error;
+  return (data || []).map(mapGiftCodePlayerRow);
+}
+
+async function upsertGiftCodes(codes) {
+  if (codes.length === 0) return;
+
+  const now = new Date().toISOString();
+  const rows = codes.map((code) => ({
+    code: code.code,
+    source: code.source || 'unknown',
+    expires_at: code.expiresAt || null,
+    active: code.active !== false,
+    last_seen_at: now
+  }));
+
+  const { error } = await supabase
+    .from('gift_codes')
+    .upsert(rows, { onConflict: 'code' });
+
+  if (error) throw error;
+}
+
+async function getActiveGiftCodes() {
+  const { data, error } = await supabase
+    .from('gift_codes')
+    .select('code,source,expires_at,active')
+    .eq('active', true)
+    .order('code', { ascending: true });
+
+  if (error) throw error;
+  return (data || []).map(mapGiftCodeRow);
+}
+
+async function getGiftCodeRedemptions() {
+  const { data, error } = await supabase
+    .from('gift_code_redemptions')
+    .select('player_id,code,status');
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function saveGiftCodeRedemption(result) {
+  const { error } = await supabase
+    .from('gift_code_redemptions')
+    .upsert({
+      player_id: String(result.playerId),
+      code: result.code,
+      status: result.status,
+      message: result.message || '',
+      err_code: result.errCode == null ? null : String(result.errCode),
+      last_attempt_at: new Date().toISOString()
+    }, { onConflict: 'player_id,code' });
+
+  if (error) throw error;
+}
+
 module.exports = {
   getEvents,
   getEventByKey,
   saveEvents,
   getReminders,
-  saveReminders
+  saveReminders,
+  upsertGiftCodePlayer,
+  getGiftCodePlayers,
+  upsertGiftCodes,
+  getActiveGiftCodes,
+  getGiftCodeRedemptions,
+  saveGiftCodeRedemption
 };
