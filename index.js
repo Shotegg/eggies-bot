@@ -39,6 +39,9 @@ const debugMemberUserIds = new Set();
 const giftCodeTerminalStatuses = new Set(['success', 'already_redeemed', 'expired', 'requirements_unmet']);
 const giftCodeRetryDelayMs = Number(process.env.GIFT_CODE_RETRY_DELAY_MS || 45000);
 const giftCodeFailedRetryCooldownMs = Number(process.env.GIFT_CODE_FAILED_RETRY_COOLDOWN_MS || 21600000);
+const reminderMinPollIntervalMs = Number(process.env.REMINDER_MIN_POLL_INTERVAL_MS || 30000);
+const reminderMaxPollIntervalMs = Number(process.env.REMINDER_MAX_POLL_INTERVAL_MS || 900000);
+const reminderWakeBufferMs = Number(process.env.REMINDER_WAKE_BUFFER_MS || 5000);
 let giftCodeWorkerRunning = false;
 
 if (!token) {
@@ -175,6 +178,61 @@ function getOccurrenceToNotify(event, nowMs) {
   const cycles = Math.floor((nowMs - firstRemindMs) / repeatMs);
   const occurrenceMs = baseMs + cycles * repeatMs;
   return { occurrenceMs, remindMinutesBefore: remindMinutes };
+}
+
+function getNextReminderDueMs(event, reminder, nowMs) {
+  if (!event || reminder.active === false) return null;
+
+  const baseMs = toEpochMs(event.nextAt);
+  if (!baseMs) return null;
+
+  const remindMinutes = event.remindMinutesBefore ?? 60;
+  const remindOffsetMs = remindMinutes * 60 * 1000;
+  const repeatHours = Number(event.repeatHours || 0);
+  const repeatMs = repeatHours > 0 ? repeatHours * 60 * 60 * 1000 : 0;
+
+  if (repeatMs === 0) {
+    if (reminder.lastNotifiedOccurrenceMs === baseMs) return null;
+    return baseMs - remindOffsetMs;
+  }
+
+  const firstRemindMs = baseMs - remindOffsetMs;
+  if (nowMs < firstRemindMs) return firstRemindMs;
+
+  const cycles = Math.floor((nowMs - firstRemindMs) / repeatMs);
+  const occurrenceMs = baseMs + cycles * repeatMs;
+  const remindAtMs = occurrenceMs - remindOffsetMs;
+  if (reminder.lastNotifiedOccurrenceMs !== occurrenceMs && nowMs >= remindAtMs) return nowMs;
+
+  return occurrenceMs + repeatMs - remindOffsetMs;
+}
+
+function getNextRolloverMs(events, nowMs) {
+  const dueTimes = events
+    .filter((event) => Number(event.repeatHours || 0) > 0 && event.nextAt)
+    .map((event) => toEpochMs(event.nextAt))
+    .filter((value) => value && value > nowMs);
+
+  return dueTimes.length > 0 ? Math.min(...dueTimes) : null;
+}
+
+function getNextReminderCycleDelayMs(events, reminders) {
+  const nowMs = Date.now();
+  const eventMap = new Map(events.map((event) => [event.key, event]));
+  const dueTimes = [];
+  const nextRolloverMs = getNextRolloverMs(events, nowMs);
+  if (nextRolloverMs) dueTimes.push(nextRolloverMs);
+
+  for (const reminder of reminders) {
+    const dueMs = getNextReminderDueMs(eventMap.get(reminder.eventKey), reminder, nowMs);
+    if (dueMs) dueTimes.push(dueMs);
+  }
+
+  if (dueTimes.length === 0) return reminderMaxPollIntervalMs;
+
+  const nextDueMs = Math.min(...dueTimes);
+  const delayMs = nextDueMs - nowMs + reminderWakeBufferMs;
+  return Math.max(reminderMinPollIntervalMs, Math.min(delayMs, reminderMaxPollIntervalMs));
 }
 
 function isHardcodedLeader(userId) {
@@ -913,8 +971,7 @@ async function handleModalSubmit(interaction) {
   if (action === 'edit_value' && field) return handleEditValueModal(interaction, field);
 }
 
-async function processEventRollovers() {
-  const events = await getEvents();
+async function processEventRollovers(events) {
   const now = Date.now();
   let changed = false;
 
@@ -934,18 +991,18 @@ async function processEventRollovers() {
   if (changed) await saveEvents(events);
 }
 
-async function processReminders(botClient) {
-  const reminders = await getReminders();
+async function processReminders(botClient, events, reminders) {
   if (reminders.length === 0) return;
 
   const now = Date.now();
   let changed = false;
   const batches = new Map();
+  const eventMap = new Map(events.map((event) => [event.key, event]));
 
   for (const reminder of reminders) {
     if (reminder.active === false) continue;
 
-    const event = await getEventByKey(reminder.eventKey);
+    const event = eventMap.get(reminder.eventKey);
     if (!event) continue;
 
     const notify = getOccurrenceToNotify(event, now);
@@ -993,6 +1050,30 @@ async function processReminders(botClient) {
   if (changed) await saveReminders(reminders);
 }
 
+async function runReminderCycle(botClient) {
+  const events = await getEvents();
+  await processEventRollovers(events);
+
+  const reminders = await getReminders();
+  await processReminders(botClient, events, reminders);
+
+  return getNextReminderCycleDelayMs(events, reminders);
+}
+
+function scheduleReminderCycle(botClient, delayMs = reminderMinPollIntervalMs) {
+  setTimeout(async () => {
+    let nextDelayMs = reminderMaxPollIntervalMs;
+    try {
+      nextDelayMs = await runReminderCycle(botClient);
+    } catch (err) {
+      console.error('Reminder cycle error:', err);
+      nextDelayMs = reminderMinPollIntervalMs;
+    }
+
+    scheduleReminderCycle(botClient, nextDelayMs);
+  }, delayMs);
+}
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
@@ -1011,11 +1092,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-setInterval(() => {
-  processEventRollovers().catch((err) => console.error('Rollover error:', err));
-  processReminders(client).catch((err) => console.error('Reminder loop error:', err));
-}, 30 * 1000);
-
-processEventRollovers().catch((err) => console.error('Initial rollover error:', err));
+scheduleReminderCycle(client, 1000);
 
 client.login(token);
