@@ -216,7 +216,7 @@ async function getActiveGiftCodes() {
 async function getGiftCodeRedemptions() {
   const { data, error } = await supabase
     .from('gift_code_redemptions')
-    .select('player_id,code,status');
+    .select('player_id,code,status,last_attempt_at');
 
   if (error) throw error;
   return data || [];
@@ -225,7 +225,7 @@ async function getGiftCodeRedemptions() {
 async function getGiftCodeRedemption(playerId, code) {
   const { data, error } = await supabase
     .from('gift_code_redemptions')
-    .select('player_id,code,status')
+    .select('player_id,code,status,last_attempt_at')
     .eq('player_id', String(playerId))
     .eq('code', code)
     .maybeSingle();

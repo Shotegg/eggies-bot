@@ -38,6 +38,7 @@ const leaderIds = (process.env.LEADER_IDS || '')
 const debugMemberUserIds = new Set();
 const giftCodeTerminalStatuses = new Set(['success', 'already_redeemed', 'expired', 'requirements_unmet']);
 const giftCodeRetryDelayMs = Number(process.env.GIFT_CODE_RETRY_DELAY_MS || 45000);
+const giftCodeFailedRetryCooldownMs = Number(process.env.GIFT_CODE_FAILED_RETRY_COOLDOWN_MS || 21600000);
 let giftCodeWorkerRunning = false;
 
 if (!token) {
@@ -235,6 +236,12 @@ function isGiftCodeTerminalStatus(status) {
   return giftCodeTerminalStatuses.has(status);
 }
 
+function isGiftCodeAttemptCoolingDown(redemption, nowMs = Date.now()) {
+  if (!redemption || isGiftCodeTerminalStatus(redemption.status)) return false;
+  const lastAttemptMs = Date.parse(redemption.last_attempt_at);
+  return Number.isFinite(lastAttemptMs) && nowMs - lastAttemptMs < giftCodeFailedRetryCooldownMs;
+}
+
 async function recordGiftCodeResult(playerId, code, result) {
   const raw = result.redeem?.data || result.player?.data || {};
   const errCode = raw.err_code == null ? null : String(raw.err_code);
@@ -258,7 +265,7 @@ async function recordGiftCodeResult(playerId, code, result) {
 
 async function redeemCodeForPlayer(playerId, code) {
   const existing = await getGiftCodeRedemption(playerId, code);
-  if (existing && isGiftCodeTerminalStatus(existing.status)) {
+  if (existing && (isGiftCodeTerminalStatus(existing.status) || isGiftCodeAttemptCoolingDown(existing))) {
     return {
       ok: false,
       skipped: true,
@@ -283,12 +290,17 @@ async function runGiftCodeWorker() {
       const players = await getGiftCodePlayers();
       const codes = await getActiveGiftCodes();
       const redemptions = await getGiftCodeRedemptions();
-      const terminal = new Set(redemptions.filter((row) => isGiftCodeTerminalStatus(row.status)).map((row) => redemptionKey(row.player_id, row.code)));
+      const nowMs = Date.now();
+      const blocked = new Set(
+        redemptions
+          .filter((row) => isGiftCodeTerminalStatus(row.status) || isGiftCodeAttemptCoolingDown(row, nowMs))
+          .map((row) => redemptionKey(row.player_id, row.code))
+      );
       let didWork = false;
 
       for (const code of codes) {
         for (const player of players) {
-          if (terminal.has(redemptionKey(player.playerId, code.code))) continue;
+          if (blocked.has(redemptionKey(player.playerId, code.code))) continue;
 
           const result = await redeemCodeForPlayer(player.playerId, code.code);
           didWork = !result.skipped;
@@ -349,7 +361,12 @@ async function syncGiftCodes(playerId) {
   }
 
   const redemptions = await getGiftCodeRedemptions();
-  const completed = new Set(redemptions.filter((row) => isGiftCodeTerminalStatus(row.status)).map((row) => redemptionKey(row.player_id, row.code)));
+  const nowMs = Date.now();
+  const completed = new Set(
+    redemptions
+      .filter((row) => isGiftCodeTerminalStatus(row.status) || isGiftCodeAttemptCoolingDown(row, nowMs))
+      .map((row) => redemptionKey(row.player_id, row.code))
+  );
   const attempted = [];
   const skipped = [];
   let pending = 0;
@@ -396,7 +413,7 @@ function formatGiftCodeSyncResult(result) {
     `Active codes found: ${result.discoveredCodes.map((item) => item.code).join(', ') || 'none'}`,
     `Queued pending redemptions: ${result.pending}`,
     `Skipped saved results: ${result.skipped.length}`,
-    `Background worker: ${giftCodeWorkerRunning ? 'already running' : 'started'} | Delay: ${Math.round(giftCodeRetryDelayMs / 1000)}s/request`
+    `Background worker: ${giftCodeWorkerRunning ? 'already running' : 'started'} | Delay: ${Math.round(giftCodeRetryDelayMs / 1000)}s/request | Failed retry cooldown: ${Math.round(giftCodeFailedRetryCooldownMs / 60000)}m`
   ];
 
   if (successes.length > 0) {
