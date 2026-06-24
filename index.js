@@ -42,6 +42,7 @@ const giftCodeFailedRetryCooldownMs = Number(process.env.GIFT_CODE_FAILED_RETRY_
 const reminderMinPollIntervalMs = Number(process.env.REMINDER_MIN_POLL_INTERVAL_MS || 30000);
 const reminderMaxPollIntervalMs = Number(process.env.REMINDER_MAX_POLL_INTERVAL_MS || 900000);
 const reminderWakeBufferMs = Number(process.env.REMINDER_WAKE_BUFFER_MS || 5000);
+const giftCodeDebug = process.env.GIFT_CODE_DEBUG === 'true';
 let giftCodeWorkerRunning = false;
 
 if (!token) {
@@ -258,6 +259,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function logGiftCodeDebug(message, details = {}) {
+  if (!giftCodeDebug) return;
+  console.log('[giftcode]', message, details);
+}
+
 function extractPlayerInfo(playerResponse, fallbackPlayerId) {
   const data = playerResponse?.data?.data;
   if (!data) {
@@ -324,6 +330,12 @@ async function recordGiftCodeResult(playerId, code, result) {
 async function redeemCodeForPlayer(playerId, code) {
   const existing = await getGiftCodeRedemption(playerId, code);
   if (existing && (isGiftCodeTerminalStatus(existing.status) || isGiftCodeAttemptCoolingDown(existing))) {
+    logGiftCodeDebug('skip saved/cooling redemption', {
+      playerId: String(playerId),
+      code,
+      status: existing.status,
+      lastAttemptAt: existing.last_attempt_at
+    });
     return {
       ok: false,
       skipped: true,
@@ -333,6 +345,16 @@ async function redeemCodeForPlayer(playerId, code) {
   }
 
   const result = await redeemGiftCode(playerId, code);
+  const raw = result.redeem?.data || result.player?.data || {};
+  logGiftCodeDebug('redeem result', {
+    playerId: String(playerId),
+    code,
+    ok: result.ok,
+    step: result.step,
+    message: result.message,
+    errCode: raw.err_code || null
+  });
+
   const info = extractPlayerInfo(result.player, playerId);
   if (result.player?.ok) await upsertGiftCodePlayer(info);
   await recordGiftCodeResult(info.playerId, code, result);
@@ -340,14 +362,27 @@ async function redeemCodeForPlayer(playerId, code) {
 }
 
 async function runGiftCodeWorker() {
-  if (giftCodeWorkerRunning) return;
+  if (giftCodeWorkerRunning) {
+    logGiftCodeDebug('worker already running');
+    return;
+  }
   giftCodeWorkerRunning = true;
+  logGiftCodeDebug('worker started', {
+    retryDelayMs: giftCodeRetryDelayMs,
+    failedRetryCooldownMs: giftCodeFailedRetryCooldownMs
+  });
 
   try {
     while (true) {
       const players = await getGiftCodePlayers();
       const codes = await getActiveGiftCodes();
       const redemptions = await getGiftCodeRedemptions();
+      logGiftCodeDebug('worker loaded queue', {
+        players: players.length,
+        codes: codes.length,
+        redemptions: redemptions.length
+      });
+
       const nowMs = Date.now();
       const blocked = new Set(
         redemptions
@@ -360,24 +395,38 @@ async function runGiftCodeWorker() {
         for (const player of players) {
           if (blocked.has(redemptionKey(player.playerId, code.code))) continue;
 
+          logGiftCodeDebug('worker attempting redeem', {
+            playerId: player.playerId,
+            code: code.code
+          });
+
           const result = await redeemCodeForPlayer(player.playerId, code.code);
           didWork = !result.skipped;
+          logGiftCodeDebug('worker sleeping after attempt', {
+            didWork,
+            delayMs: giftCodeRetryDelayMs
+          });
           await sleep(giftCodeRetryDelayMs);
           break;
         }
         if (didWork) break;
       }
 
-      if (!didWork) break;
+      if (!didWork) {
+        logGiftCodeDebug('worker stopped: no pending work');
+        break;
+      }
     }
   } catch (error) {
     console.error('Gift code background worker failed:', error);
   } finally {
     giftCodeWorkerRunning = false;
+    logGiftCodeDebug('worker finished');
   }
 }
 
 function startGiftCodeWorker() {
+  logGiftCodeDebug('worker scheduled');
   setTimeout(() => {
     runGiftCodeWorker().catch((error) => console.error('Gift code background worker failed:', error));
   }, 0);
@@ -402,6 +451,10 @@ async function syncGiftCodes(playerId) {
   }
 
   const discoveredCodes = await fetchActiveGiftCodes();
+  logGiftCodeDebug('sync discovered active codes', {
+    playerId: playerId || null,
+    codes: discoveredCodes.map((item) => `${item.code}:${item.source}`)
+  });
   await upsertGiftCodes(discoveredCodes);
 
   const players = await getGiftCodePlayers();
@@ -440,6 +493,12 @@ async function syncGiftCodes(playerId) {
   }
 
   startGiftCodeWorker();
+  logGiftCodeDebug('sync queued worker', {
+    players: players.length,
+    discoveredCodes: discoveredCodes.length,
+    pending,
+    skipped: skipped.length
+  });
 
   return {
     ok: true,
