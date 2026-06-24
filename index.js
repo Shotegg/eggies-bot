@@ -22,6 +22,7 @@ const {
   upsertGiftCodePlayer,
   getGiftCodePlayers,
   upsertGiftCodes,
+  getActiveGiftCodes,
   getGiftCodeRedemptions,
   getGiftCodeRedemption,
   saveGiftCodeRedemption
