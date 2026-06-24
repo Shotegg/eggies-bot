@@ -213,15 +213,6 @@ async function getActiveGiftCodes() {
   return (data || []).map(mapGiftCodeRow);
 }
 
-async function getGiftCodeRedemptions() {
-  const { data, error } = await supabase
-    .from('gift_code_redemptions')
-    .select('player_id,code,status,last_attempt_at');
-
-  if (error) throw error;
-  return data || [];
-}
-
 async function getGiftCodeRedemption(playerId, code) {
   const { data, error } = await supabase
     .from('gift_code_redemptions')
@@ -232,6 +223,34 @@ async function getGiftCodeRedemption(playerId, code) {
 
   if (error) throw error;
   return data || null;
+}
+
+async function getGiftCodeRedemptionsForCodes(codes) {
+  const codeList = [...new Set(codes.map((code) => String(code)).filter(Boolean))];
+  if (codeList.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('gift_code_redemptions')
+    .select('player_id,code,status,last_attempt_at')
+    .in('code', codeList);
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function deleteOldGiftCodes(cutoffIso) {
+  const expired = await supabase
+    .from('gift_codes')
+    .delete()
+    .not('expires_at', 'is', null)
+    .lt('expires_at', cutoffIso);
+  if (expired.error) throw expired.error;
+
+  const stale = await supabase
+    .from('gift_codes')
+    .delete()
+    .lt('last_seen_at', cutoffIso);
+  if (stale.error) throw stale.error;
 }
 
 async function saveGiftCodeRedemption(result) {
@@ -259,7 +278,8 @@ module.exports = {
   getGiftCodePlayers,
   upsertGiftCodes,
   getActiveGiftCodes,
-  getGiftCodeRedemptions,
   getGiftCodeRedemption,
+  getGiftCodeRedemptionsForCodes,
+  deleteOldGiftCodes,
   saveGiftCodeRedemption
 };

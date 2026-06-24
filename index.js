@@ -23,8 +23,9 @@ const {
   getGiftCodePlayers,
   upsertGiftCodes,
   getActiveGiftCodes,
-  getGiftCodeRedemptions,
   getGiftCodeRedemption,
+  getGiftCodeRedemptionsForCodes,
+  deleteOldGiftCodes,
   saveGiftCodeRedemption
 } = require('./storage');
 const { startKeepAlive } = require('./keepAlive');
@@ -51,11 +52,15 @@ const giftCodeTerminalStatuses = new Set([
 ]);
 const giftCodeRetryDelayMs = Number(process.env.GIFT_CODE_RETRY_DELAY_MS || 45000);
 const giftCodeFailedRetryCooldownMs = Number(process.env.GIFT_CODE_FAILED_RETRY_COOLDOWN_MS || 21600000);
+const giftCodeAutoScanIntervalMs = Number(process.env.GIFT_CODE_AUTO_SCAN_INTERVAL_MS || 3600000);
+const giftCodeCleanupAfterDays = Number(process.env.GIFT_CODE_CLEANUP_AFTER_DAYS || 14);
 const reminderMinPollIntervalMs = Number(process.env.REMINDER_MIN_POLL_INTERVAL_MS || 30000);
 const reminderMaxPollIntervalMs = Number(process.env.REMINDER_MAX_POLL_INTERVAL_MS || 900000);
 const reminderWakeBufferMs = Number(process.env.REMINDER_WAKE_BUFFER_MS || 5000);
 const giftCodeDebug = process.env.GIFT_CODE_DEBUG === 'true';
 let giftCodeWorkerRunning = false;
+let giftCodeScanRunning = false;
+let lastGiftCodeScanMs = 0;
 
 if (!token) {
   console.error('Missing DISCORD_TOKEN in .env');
@@ -67,6 +72,8 @@ startKeepAlive();
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+  maybeScanGiftCodesInBackground('startup');
+  scheduleGiftCodeAutoScan();
 });
 
 function toEpochMs(value) {
@@ -304,10 +311,6 @@ async function registerGiftCodePlayer(playerId) {
   return { ok: true, player, info };
 }
 
-function redemptionKey(playerId, code) {
-  return `${String(playerId)}::${String(code).toLowerCase()}`;
-}
-
 function isGiftCodeTerminalStatus(status) {
   return giftCodeTerminalStatuses.has(status);
 }
@@ -403,6 +406,53 @@ async function redeemCodeForPlayer(playerId, code) {
   return { ...result, playerInfo: info };
 }
 
+function getRedemptionFromIndex(redemptionIndex, playerId, code) {
+  return redemptionIndex.get(`${String(playerId)}::${String(code).toLowerCase()}`) || null;
+}
+
+function buildRedemptionIndex(redemptions) {
+  return new Map(redemptions.map((row) => [`${String(row.player_id)}::${String(row.code).toLowerCase()}`, row]));
+}
+
+function findNextGiftCodeAttempt(players, codes, redemptionIndex) {
+  const nowMs = Date.now();
+  for (const code of codes) {
+    for (const player of players) {
+      const redemption = getRedemptionFromIndex(redemptionIndex, player.playerId, code.code);
+      if (!redemption || (!isGiftCodeTerminalStatus(redemption.status) && !isGiftCodeAttemptCoolingDown(redemption, nowMs))) {
+        return { player, code, redemption };
+      }
+    }
+  }
+  return null;
+}
+
+function countPendingGiftCodeAttempts(players, codes, redemptionIndex) {
+  const nowMs = Date.now();
+  let pending = 0;
+  let skipped = 0;
+
+  for (const code of codes) {
+    for (const player of players) {
+      const redemption = getRedemptionFromIndex(redemptionIndex, player.playerId, code.code);
+      if (redemption && (isGiftCodeTerminalStatus(redemption.status) || isGiftCodeAttemptCoolingDown(redemption, nowMs))) {
+        skipped += 1;
+      } else {
+        pending += 1;
+      }
+    }
+  }
+
+  return { pending, skipped };
+}
+
+async function cleanupOldGiftCodes() {
+  if (!Number.isFinite(giftCodeCleanupAfterDays) || giftCodeCleanupAfterDays <= 0) return;
+  const cutoff = new Date(Date.now() - giftCodeCleanupAfterDays * 24 * 60 * 60 * 1000).toISOString();
+  await deleteOldGiftCodes(cutoff);
+  logGiftCodeDebug('cleanup old gift codes', { cutoff, cleanupAfterDays: giftCodeCleanupAfterDays });
+}
+
 async function runGiftCodeWorker() {
   if (giftCodeWorkerRunning) {
     logGiftCodeDebug('worker already running');
@@ -418,46 +468,31 @@ async function runGiftCodeWorker() {
     while (true) {
       const players = await getGiftCodePlayers();
       const codes = await getActiveGiftCodes();
-      const redemptions = await getGiftCodeRedemptions();
+      const redemptions = await getGiftCodeRedemptionsForCodes(codes.map((code) => code.code));
+      const redemptionIndex = buildRedemptionIndex(redemptions);
       logGiftCodeDebug('worker loaded queue', {
         players: players.length,
         codes: codes.length,
-        redemptions: redemptions.length
+        relevantRedemptions: redemptions.length
       });
 
-      const nowMs = Date.now();
-      const blocked = new Set(
-        redemptions
-          .filter((row) => isGiftCodeTerminalStatus(row.status) || isGiftCodeAttemptCoolingDown(row, nowMs))
-          .map((row) => redemptionKey(row.player_id, row.code))
-      );
-      let didWork = false;
-
-      for (const code of codes) {
-        for (const player of players) {
-          if (blocked.has(redemptionKey(player.playerId, code.code))) continue;
-
-          logGiftCodeDebug('worker attempting redeem', {
-            playerId: player.playerId,
-            code: code.code
-          });
-
-          const result = await redeemCodeForPlayer(player.playerId, code.code);
-          didWork = !result.skipped;
-          logGiftCodeDebug('worker sleeping after attempt', {
-            didWork,
-            delayMs: giftCodeRetryDelayMs
-          });
-          await sleep(giftCodeRetryDelayMs);
-          break;
-        }
-        if (didWork) break;
-      }
-
-      if (!didWork) {
+      const next = findNextGiftCodeAttempt(players, codes, redemptionIndex);
+      if (!next) {
         logGiftCodeDebug('worker stopped: no pending work');
         break;
       }
+
+      logGiftCodeDebug('worker attempting redeem', {
+        playerId: next.player.playerId,
+        code: next.code.code,
+        previousStatus: next.redemption?.status || null
+      });
+
+      await redeemCodeForPlayer(next.player.playerId, next.code.code);
+      logGiftCodeDebug('worker sleeping after attempt', {
+        delayMs: giftCodeRetryDelayMs
+      });
+      await sleep(giftCodeRetryDelayMs);
     }
   } catch (error) {
     console.error('Gift code background worker failed:', error);
@@ -493,11 +528,13 @@ async function syncGiftCodes(playerId) {
   }
 
   const discoveredCodes = await fetchActiveGiftCodes();
+  lastGiftCodeScanMs = Date.now();
   logGiftCodeDebug('sync discovered active codes', {
     playerId: playerId || null,
     codes: discoveredCodes.map((item) => `${item.code}:${item.source}`)
   });
   await upsertGiftCodes(discoveredCodes);
+  await cleanupOldGiftCodes();
 
   const players = await getGiftCodePlayers();
   if (players.length === 0) {
@@ -513,33 +550,17 @@ async function syncGiftCodes(playerId) {
     };
   }
 
-  const redemptions = await getGiftCodeRedemptions();
-  const nowMs = Date.now();
-  const completed = new Set(
-    redemptions
-      .filter((row) => isGiftCodeTerminalStatus(row.status) || isGiftCodeAttemptCoolingDown(row, nowMs))
-      .map((row) => redemptionKey(row.player_id, row.code))
-  );
   const attempted = [];
-  const skipped = [];
-  let pending = 0;
-
-  for (const code of discoveredCodes) {
-    for (const player of players) {
-      if (completed.has(redemptionKey(player.playerId, code.code))) {
-        skipped.push({ playerId: player.playerId, code: code.code });
-        continue;
-      }
-      pending += 1;
-    }
-  }
+  const redemptions = await getGiftCodeRedemptionsForCodes(discoveredCodes.map((code) => code.code));
+  const redemptionIndex = buildRedemptionIndex(redemptions);
+  const { pending, skipped } = countPendingGiftCodeAttempts(players, discoveredCodes, redemptionIndex);
 
   startGiftCodeWorker();
   logGiftCodeDebug('sync queued worker', {
     players: players.length,
     discoveredCodes: discoveredCodes.length,
     pending,
-    skipped: skipped.length
+    skipped
   });
 
   return {
@@ -551,6 +572,56 @@ async function syncGiftCodes(playerId) {
     skipped,
     pending
   };
+}
+
+async function scanGiftCodesInBackground(reason = 'scheduled') {
+  if (giftCodeScanRunning) {
+    logGiftCodeDebug('scan already running', { reason });
+    return;
+  }
+
+  giftCodeScanRunning = true;
+  lastGiftCodeScanMs = Date.now();
+
+  try {
+    const discoveredCodes = await fetchActiveGiftCodes();
+    logGiftCodeDebug('auto scan discovered active codes', {
+      reason,
+      codes: discoveredCodes.map((item) => `${item.code}:${item.source}`)
+    });
+    await upsertGiftCodes(discoveredCodes);
+    await cleanupOldGiftCodes();
+
+    const players = await getGiftCodePlayers();
+    if (players.length > 0 && discoveredCodes.length > 0) {
+      startGiftCodeWorker();
+      logGiftCodeDebug('auto scan queued worker', {
+        reason,
+        players: players.length,
+        discoveredCodes: discoveredCodes.length
+      });
+    }
+  } catch (error) {
+    console.error('Gift code auto scan failed:', error);
+  } finally {
+    giftCodeScanRunning = false;
+  }
+}
+
+function maybeScanGiftCodesInBackground(reason) {
+  if (!Number.isFinite(giftCodeAutoScanIntervalMs) || giftCodeAutoScanIntervalMs <= 0) return;
+  if (Date.now() - lastGiftCodeScanMs < giftCodeAutoScanIntervalMs) return;
+  setTimeout(() => {
+    scanGiftCodesInBackground(reason).catch((error) => console.error('Gift code auto scan failed:', error));
+  }, 0);
+}
+
+function scheduleGiftCodeAutoScan(delayMs = giftCodeAutoScanIntervalMs) {
+  if (!Number.isFinite(giftCodeAutoScanIntervalMs) || giftCodeAutoScanIntervalMs <= 0) return;
+  setTimeout(async () => {
+    await scanGiftCodesInBackground('scheduled');
+    scheduleGiftCodeAutoScan(giftCodeAutoScanIntervalMs);
+  }, Math.max(60000, delayMs));
 }
 
 function formatGiftCodeSyncResult(result) {
@@ -571,7 +642,7 @@ function formatGiftCodeSyncResult(result) {
       : 'Processing saved players.',
     `Active codes found: ${result.discoveredCodes.map((item) => item.code).join(', ') || 'none'}`,
     `Queued pending redemptions: ${result.pending}`,
-    `Skipped saved results: ${result.skipped.length}`,
+    `Skipped saved results: ${Array.isArray(result.skipped) ? result.skipped.length : result.skipped}`,
     `Background worker: ${giftCodeWorkerRunning ? 'already running' : 'started'} | Delay: ${Math.round(giftCodeRetryDelayMs / 1000)}s/request | Failed retry cooldown: ${Math.round(giftCodeFailedRetryCooldownMs / 60000)}m`
   ];
 
@@ -653,6 +724,7 @@ async function handleChatCommand(interaction) {
   }
 
   if (interaction.commandName === 'events') {
+    maybeScanGiftCodesInBackground('events-command');
     const events = await getEvents();
     const leader = isLeader(interaction.user.id);
     const lines = events.length === 0 ? ['No saved events yet.'] : events.map(leader ? formatEventLineForLeader : formatEventLine);
