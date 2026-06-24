@@ -37,7 +37,18 @@ const leaderIds = (process.env.LEADER_IDS || '')
   .map((id) => id.trim())
   .filter(Boolean);
 const debugMemberUserIds = new Set();
-const giftCodeTerminalStatuses = new Set(['success', 'already_redeemed', 'expired', 'requirements_unmet']);
+const giftCodeTerminalStatuses = new Set([
+  'success',
+  'already_redeemed',
+  'expired',
+  'claim_limit_reached',
+  'invalid_code',
+  'requirements_unmet',
+  'town_center_too_low',
+  'account_age_unmet',
+  'prerequisite_unmet',
+  'same_type_redeemed'
+]);
 const giftCodeRetryDelayMs = Number(process.env.GIFT_CODE_RETRY_DELAY_MS || 45000);
 const giftCodeFailedRetryCooldownMs = Number(process.env.GIFT_CODE_FAILED_RETRY_COOLDOWN_MS || 21600000);
 const reminderMinPollIntervalMs = Number(process.env.REMINDER_MIN_POLL_INTERVAL_MS || 30000);
@@ -307,17 +318,47 @@ function isGiftCodeAttemptCoolingDown(redemption, nowMs = Date.now()) {
   return Number.isFinite(lastAttemptMs) && nowMs - lastAttemptMs < giftCodeFailedRetryCooldownMs;
 }
 
+function classifyGiftCodeFailure(errCode, message) {
+  const normalized = String(message || '').toLowerCase();
+
+  if (['40001', '40002'].includes(errCode) || normalized.includes('already claimed') || normalized.includes('already redeemed')) {
+    return 'already_redeemed';
+  }
+  if (['40003', '40015'].includes(errCode) || normalized.includes('expired')) {
+    return 'expired';
+  }
+  if (errCode === '40004' || normalized.includes('claim limit') || normalized.includes('redemption limit')) {
+    return 'claim_limit_reached';
+  }
+  if (errCode === '40005' || normalized.includes('redeemed successfully') || normalized.includes('please claim the rewards')) {
+    return 'success';
+  }
+  if (errCode === '40006' || normalized.includes('gift code not found') || normalized.includes('case-sensitive')) {
+    return 'invalid_code';
+  }
+  if (errCode === '40007' || normalized.includes('town center')) {
+    return 'town_center_too_low';
+  }
+  if (['40008', '40011'].includes(errCode) || normalized.includes('redemption requirements')) {
+    return 'requirements_unmet';
+  }
+  if (errCode === '40012' || normalized.includes('account age')) {
+    return 'account_age_unmet';
+  }
+  if (normalized.includes('prerequisite unmet')) {
+    return 'prerequisite_unmet';
+  }
+  if (normalized.includes('same gift code type')) {
+    return 'same_type_redeemed';
+  }
+
+  return 'failed';
+}
+
 async function recordGiftCodeResult(playerId, code, result) {
   const raw = result.redeem?.data || result.player?.data || {};
   const errCode = raw.err_code == null ? null : String(raw.err_code);
-  const status = result.ok
-    ? 'success'
-    : ({
-      40002: 'already_redeemed',
-      40003: 'expired',
-      40005: 'already_redeemed',
-      40008: 'requirements_unmet'
-    }[errCode] || 'failed');
+  const status = result.ok ? 'success' : classifyGiftCodeFailure(errCode, result.message || raw.msg);
 
   await saveGiftCodeRedemption({
     playerId,

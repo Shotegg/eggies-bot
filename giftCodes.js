@@ -6,21 +6,21 @@ const CODE_SOURCE_PAGE_URL = 'https://kingshot.net/gift-codes';
 const SIGN_SUFFIX = 'mN4!pQs6JrYwV9';
 
 const ERROR_MESSAGES = {
-  40001: 'Gift Code not found. Check uppercase/lowercase.',
-  40002: 'Already redeemed.',
-  40003: 'Expired, unable to claim.',
-  40004: 'Redemption limit reached.',
-  40005: 'The same Gift Code type can only be redeemed once.',
-  40006: 'Prerequisite unmet.',
+  40001: 'Already claimed, unable to claim again.',
+  40002: 'Expired, unable to claim.',
+  40003: 'Claim limit reached, unable to claim.',
+  40004: 'Your Town Center level is not enough, unable to claim.',
+  40005: 'Redeemed, please claim the rewards in your mail!',
+  40006: 'Gift Code not found, this is case-sensitive!',
   40007: 'Town Center level is not high enough.',
   40008: 'Account does not satisfy the redemption requirements.',
   40009: 'Please log in to the relevant character before redemption.',
-  40010: 'Request too frequent. Try again later.',
-  40011: 'Server busy. Rewards may be sent later.',
-  40012: 'Code expired, retry verification.',
-  40013: 'Invalid code, retry verification.',
-  40014: 'Verification refreshed too frequently.',
-  40015: 'Unknown gift code error.'
+  40010: 'Server busy, the rewards will be sent afterwards, please wait.',
+  40011: 'Your account does not satisfy the redemption requirements.',
+  40012: 'Your account age does not satisfy the requirement.',
+  40013: 'Request too frequent, please try again later.',
+  40014: 'Incorrect code, please retry the verification.',
+  40015: 'Code expired, please retry the verification.'
 };
 
 function md5(value) {
@@ -71,7 +71,7 @@ async function postForm(path, params) {
 
 function getGiftCodeErrorMessage(response) {
   const errCode = response?.data?.err_code;
-  return ERROR_MESSAGES[errCode] || response?.data?.msg || 'Gift code request failed.';
+  return response?.data?.msg || ERROR_MESSAGES[errCode] || 'Gift code request failed.';
 }
 
 async function lookupPlayer(fid) {
