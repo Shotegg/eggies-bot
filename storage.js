@@ -229,13 +229,22 @@ async function getGiftCodeRedemptionsForCodes(codes) {
   const codeList = [...new Set(codes.map((code) => String(code)).filter(Boolean))];
   if (codeList.length === 0) return [];
 
-  const { data, error } = await supabase
-    .from('gift_code_redemptions')
-    .select('player_id,code,status,last_attempt_at')
-    .in('code', codeList);
+  const pageSize = 1000;
+  const rows = [];
 
-  if (error) throw error;
-  return data || [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from('gift_code_redemptions')
+      .select('player_id,code,status,last_attempt_at')
+      .in('code', codeList)
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+
+  return rows;
 }
 
 async function deleteOldGiftCodes(cutoffIso) {

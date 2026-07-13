@@ -33,18 +33,28 @@ const commands = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName('giftcode')
-    .setDescription('Redeem a Kingshot gift code for one player')
-    .addStringOption((option) =>
-      option
-        .setName('player_id')
-        .setDescription('Kingshot Player ID. Leave empty to process saved players.')
-        .setRequired(false)
+    .setDescription('Manage Kingshot gift code redemptions')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('run')
+        .setDescription('Sync/redeem active Kingshot gift codes')
+        .addStringOption((option) =>
+          option
+            .setName('player_id')
+            .setDescription('Kingshot Player ID. Leave empty to process saved players.')
+            .setRequired(false)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('code')
+            .setDescription('Gift code to redeem. Leave empty to sync active codes.')
+            .setRequired(false)
+        )
     )
-    .addStringOption((option) =>
-      option
-        .setName('code')
-        .setDescription('Gift code to redeem. Leave empty to sync active codes.')
-        .setRequired(false)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('list')
+        .setDescription('List saved Kingshot gift code players')
     )
     .toJSON()
 ];

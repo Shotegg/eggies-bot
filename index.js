@@ -33,6 +33,7 @@ const { fetchActiveGiftCodes, lookupPlayer, redeemGiftCode } = require('./giftCo
 
 const token = process.env.DISCORD_TOKEN;
 const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
+const giftCodeNotifyChannelId = process.env.GIFT_CODE_NOTIFY_CHANNEL_ID || '';
 const leaderIds = (process.env.LEADER_IDS || '')
   .split(',')
   .map((id) => id.trim())
@@ -61,6 +62,8 @@ const giftCodeDebug = process.env.GIFT_CODE_DEBUG === 'true';
 let giftCodeWorkerRunning = false;
 let giftCodeScanRunning = false;
 let lastGiftCodeScanMs = 0;
+const giftCodeNotificationBuffer = new Map();
+let giftCodeNotificationTimer = null;
 
 if (!token) {
   console.error('Missing DISCORD_TOKEN in .env');
@@ -269,7 +272,8 @@ function buildHelpContent(userId) {
     '`/help` show this message',
     '`/events` list saved events',
     '`/event name:<event title>` show next time + actions',
-    '`/giftcode player_id:<id> [code]` sync/redeem active Kingshot gift codes',
+    '`/giftcode run [player_id] [code]` sync/redeem active Kingshot gift codes',
+    '`/giftcode list` list saved gift code players',
     isLeader(userId) ? 'Role: Leader' : 'Role: Member'
   ].filter(Boolean).join('\n');
 }
@@ -403,7 +407,12 @@ async function redeemCodeForPlayer(playerId, code) {
   const info = extractPlayerInfo(result.player, playerId);
   if (result.player?.ok) await upsertGiftCodePlayer(info);
   await recordGiftCodeResult(info.playerId, code, result);
-  return { ...result, playerInfo: info };
+  return {
+    ...result,
+    playerInfo: info,
+    previousStatus: existing?.status || null,
+    newSuccessfulRedemption: result.ok && existing?.status !== 'success'
+  };
 }
 
 function getRedemptionFromIndex(redemptionIndex, playerId, code) {
@@ -453,6 +462,46 @@ async function cleanupOldGiftCodes() {
   logGiftCodeDebug('cleanup old gift codes', { cutoff, cleanupAfterDays: giftCodeCleanupAfterDays });
 }
 
+function formatGiftCodePlayerLabel(playerInfo) {
+  const name = playerInfo.nickname || 'Unknown';
+  return `${name} (${playerInfo.playerId})`;
+}
+
+async function flushGiftCodeNotifications() {
+  giftCodeNotificationTimer = null;
+  if (!giftCodeNotifyChannelId || giftCodeNotificationBuffer.size === 0) return;
+
+  const entries = [...giftCodeNotificationBuffer.entries()];
+  giftCodeNotificationBuffer.clear();
+
+  try {
+    const channel = await client.channels.fetch(giftCodeNotifyChannelId);
+    if (!channel || !channel.isTextBased()) return;
+
+    for (const [code, players] of entries) {
+      const uniquePlayers = [...new Map(players.map((player) => [player.playerId, player])).values()];
+      const labels = uniquePlayers.map(formatGiftCodePlayerLabel);
+      const shown = labels.slice(0, 20).join(', ');
+      const extra = labels.length > 20 ? `, +${labels.length - 20} more` : '';
+      await channel.send(`Redeemed ${code} for ${labels.length} player${labels.length === 1 ? '' : 's'}: ${shown}${extra}`);
+    }
+  } catch (error) {
+    console.error('Gift code notification failed:', error);
+  }
+}
+
+function queueGiftCodeNotification(code, playerInfo) {
+  if (!giftCodeNotifyChannelId) return;
+  if (!giftCodeNotificationBuffer.has(code)) giftCodeNotificationBuffer.set(code, []);
+  giftCodeNotificationBuffer.get(code).push(playerInfo);
+
+  if (!giftCodeNotificationTimer) {
+    giftCodeNotificationTimer = setTimeout(() => {
+      flushGiftCodeNotifications().catch((error) => console.error('Gift code notification failed:', error));
+    }, 30000);
+  }
+}
+
 async function runGiftCodeWorker() {
   if (giftCodeWorkerRunning) {
     logGiftCodeDebug('worker already running');
@@ -488,7 +537,10 @@ async function runGiftCodeWorker() {
         previousStatus: next.redemption?.status || null
       });
 
-      await redeemCodeForPlayer(next.player.playerId, next.code.code);
+      const result = await redeemCodeForPlayer(next.player.playerId, next.code.code);
+      if (result.newSuccessfulRedemption) {
+        queueGiftCodeNotification(next.code.code, result.playerInfo);
+      }
       logGiftCodeDebug('worker sleeping after attempt', {
         delayMs: giftCodeRetryDelayMs
       });
@@ -661,6 +713,46 @@ function formatGiftCodeSyncResult(result) {
   return lines.join('\n');
 }
 
+function chunkLines(header, lines, maxLength = 1900) {
+  const chunks = [];
+  let current = header;
+
+  for (const line of lines) {
+    const next = `${current}\n${line}`;
+    if (next.length > maxLength && current !== header) {
+      chunks.push(current);
+      current = `${header}\n${line}`;
+    } else {
+      current = next;
+    }
+  }
+
+  chunks.push(current);
+  return chunks;
+}
+
+function formatGiftCodePlayerLines(players) {
+  return players
+    .slice()
+    .sort((a, b) => (a.nickname || '').localeCompare(b.nickname || '') || String(a.playerId).localeCompare(String(b.playerId)))
+    .map((player) => `${player.nickname || 'Unknown'} - ${player.playerId}`);
+}
+
+async function replyGiftCodePlayerList(interaction) {
+  const players = await getGiftCodePlayers();
+  if (players.length === 0) {
+    await interaction.editReply('No saved gift code players.');
+    return;
+  }
+
+  const header = `Saved gift code players (${players.length})`;
+  const chunks = chunkLines(header, formatGiftCodePlayerLines(players));
+  await interaction.editReply(chunks[0]);
+  for (const chunk of chunks.slice(1)) {
+    await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
+  }
+}
+
 function buildDebugRoleRow(userId) {
   const nextRole = isLeader(userId) ? 'Member' : 'Leader';
   return new ActionRowBuilder().addComponents(
@@ -740,12 +832,18 @@ async function handleChatCommand(interaction) {
   }
 
   if (interaction.commandName === 'giftcode') {
+    const subcommand = interaction.options.getSubcommand(false);
     const playerId = interaction.options.getString('player_id', false)?.trim();
     const code = interaction.options.getString('code', false)?.trim();
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     try {
+      if (subcommand === 'list') {
+        await replyGiftCodePlayerList(interaction);
+        return;
+      }
+
       if (!code) {
         const result = await syncGiftCodes(playerId);
         await interaction.editReply(formatGiftCodeSyncResult(result));

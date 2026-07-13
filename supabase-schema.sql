@@ -87,3 +87,11 @@ drop trigger if exists trg_gift_code_redemptions_updated_at on public.gift_code_
 create trigger trg_gift_code_redemptions_updated_at
 before update on public.gift_code_redemptions
 for each row execute procedure public.set_updated_at();
+
+grant usage on schema public to service_role;
+
+grant select, insert, update, delete on table public.events to service_role;
+grant select, insert, update, delete on table public.reminder_subscriptions to service_role;
+grant select, insert, update, delete on table public.gift_code_players to service_role;
+grant select, insert, update, delete on table public.gift_codes to service_role;
+grant select, insert, update, delete on table public.gift_code_redemptions to service_role;
