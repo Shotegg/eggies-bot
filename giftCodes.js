@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const API_BASE_URL = 'https://kingshot-giftcode.centurygame.com/api';
 const CODE_SOURCE_API_URL = 'https://kingshot.net/api/gift-codes';
 const CODE_SOURCE_PAGE_URL = 'https://kingshot.net/gift-codes';
+const CODE_SOURCE_WIKI_URL = 'https://kingshotwiki.com/giftcodes/';
 const SIGN_SUFFIX = 'mN4!pQs6JrYwV9';
 
 const ERROR_MESSAGES = {
@@ -169,12 +170,40 @@ function parseActiveCodesFromHtml(html) {
   return codes;
 }
 
+function parseActiveCodesFromWikiHtml(html) {
+  const text = decodeBasicHtml(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ');
+  const activeSection = text.match(/Active Codes:([\s\S]*?)(Concierge member codes:|How to Redeem Codes|Expired Codes|$)/i)?.[1] || '';
+  const ignored = new Set(['active', 'codes', 'copy', 'concierge', 'member', 'how', 'redeem']);
+  const codes = [];
+
+  for (const match of activeSection.matchAll(/\b([A-Za-z0-9][A-Za-z0-9_-]{3,})\s+Copy\b/g)) {
+    const code = match[1].trim();
+    if (!ignored.has(code.toLowerCase())) {
+      codes.push({ code, expiresAt: null, source: 'kingshotwiki-html' });
+    }
+  }
+
+  return codes;
+}
+
 async function fetchActiveCodesFromPage() {
   const response = await fetch(CODE_SOURCE_PAGE_URL, {
     headers: { accept: 'text/html' }
   });
   if (!response.ok) throw new Error(`Gift code page returned HTTP ${response.status}`);
   return parseActiveCodesFromHtml(await response.text());
+}
+
+async function fetchActiveCodesFromWiki() {
+  const response = await fetch(CODE_SOURCE_WIKI_URL, {
+    headers: { accept: 'text/html' }
+  });
+  if (!response.ok) throw new Error(`Gift code wiki page returned HTTP ${response.status}`);
+  return parseActiveCodesFromWikiHtml(await response.text());
 }
 
 function getExtraGiftCodes() {
@@ -188,7 +217,8 @@ function getExtraGiftCodes() {
 async function fetchActiveGiftCodes() {
   const sources = await Promise.allSettled([
     fetchActiveCodesFromApi(),
-    fetchActiveCodesFromPage()
+    fetchActiveCodesFromPage(),
+    fetchActiveCodesFromWiki()
   ]);
   const codes = [...getExtraGiftCodes()];
 
@@ -205,5 +235,6 @@ module.exports = {
   redeemGiftCode,
   getGiftCodeErrorMessage,
   fetchActiveGiftCodes,
-  parseActiveCodesFromHtml
+  parseActiveCodesFromHtml,
+  parseActiveCodesFromWikiHtml
 };
