@@ -14,7 +14,7 @@ const ERROR_MESSAGES = {
   40005: 'Redeemed, please claim the rewards in your mail!',
   40006: 'Gift Code not found, this is case-sensitive!',
   40007: 'Town Center level is not high enough.',
-  40008: 'Account does not satisfy the redemption requirements.',
+  40008: 'Gift has already been claimed.',
   40009: 'Please log in to the relevant character before redemption.',
   40010: 'Server busy, the rewards will be sent afterwards, please wait.',
   40011: 'Your account does not satisfy the redemption requirements.',
@@ -31,7 +31,7 @@ function md5(value) {
 function appendSign(params) {
   const payload = {
     ...params,
-    time: params.time || Date.now().toString()
+    time: params.time || Math.floor(Date.now() / 1000).toString()
   };
 
   const sorted = Object.keys(payload)
@@ -75,31 +75,17 @@ function getGiftCodeErrorMessage(response) {
   return response?.data?.msg || ERROR_MESSAGES[errCode] || 'Gift code request failed.';
 }
 
-async function lookupPlayer(fid) {
-  return postForm('/player', { fid: String(fid) });
-}
-
-async function redeemGiftCode(fid, cdk) {
-  const player = await lookupPlayer(fid);
-  if (!player.ok) {
-    return {
-      ok: false,
-      step: 'player',
-      player,
-      message: getGiftCodeErrorMessage(player)
-    };
-  }
-
+async function redeemGiftCode(fid, cdk, kid) {
   const redeem = await postForm('/gift_code', {
     fid: String(fid),
     cdk: String(cdk).trim(),
-    captcha_code: ''
+    kid: String(kid)
   });
 
   return {
     ok: redeem.ok,
     step: 'redeem',
-    player,
+    player: null,
     redeem,
     message: redeem.ok ? 'Redeemed successfully.' : getGiftCodeErrorMessage(redeem)
   };
@@ -231,7 +217,6 @@ async function fetchActiveGiftCodes() {
 
 module.exports = {
   appendSign,
-  lookupPlayer,
   redeemGiftCode,
   getGiftCodeErrorMessage,
   fetchActiveGiftCodes,

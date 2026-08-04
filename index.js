@@ -21,6 +21,7 @@ const {
   saveReminders,
   upsertGiftCodePlayer,
   getGiftCodePlayers,
+  getGiftCodePlayer,
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemption,
@@ -29,7 +30,7 @@ const {
   saveGiftCodeRedemption
 } = require('./storage');
 const { startKeepAlive } = require('./keepAlive');
-const { fetchActiveGiftCodes, lookupPlayer, redeemGiftCode } = require('./giftCodes');
+const { fetchActiveGiftCodes, redeemGiftCode } = require('./giftCodes');
 
 const token = process.env.DISCORD_TOKEN;
 const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
@@ -49,12 +50,14 @@ const giftCodeTerminalStatuses = new Set([
   'town_center_too_low',
   'account_age_unmet',
   'prerequisite_unmet',
-  'same_type_redeemed'
+  'same_type_redeemed',
+  'missing_kingdom_id'
 ]);
 const giftCodeRetryDelayMs = Number(process.env.GIFT_CODE_RETRY_DELAY_MS || 45000);
 const giftCodeFailedRetryCooldownMs = Number(process.env.GIFT_CODE_FAILED_RETRY_COOLDOWN_MS || 21600000);
 const giftCodeAutoScanIntervalMs = Number(process.env.GIFT_CODE_AUTO_SCAN_INTERVAL_MS || 3600000);
 const giftCodeCleanupAfterDays = Number(process.env.GIFT_CODE_CLEANUP_AFTER_DAYS || 14);
+const defaultGiftCodeKingdomId = Number(process.env.GIFT_CODE_DEFAULT_KINGDOM_ID || 342);
 const reminderMinPollIntervalMs = Number(process.env.REMINDER_MIN_POLL_INTERVAL_MS || 30000);
 const reminderMaxPollIntervalMs = Number(process.env.REMINDER_MAX_POLL_INTERVAL_MS || 900000);
 const reminderWakeBufferMs = Number(process.env.REMINDER_WAKE_BUFFER_MS || 5000);
@@ -272,7 +275,7 @@ function buildHelpContent(userId) {
     '`/help` show this message',
     '`/events` list saved events',
     '`/event name:<event title>` show next time + actions',
-    '`/giftcode run [player_id] [code]` sync/redeem active Kingshot gift codes',
+    '`/giftcode run [player_id] [code] [kingdom]` sync/redeem active Kingshot gift codes',
     '`/giftcode list` list saved gift code players',
     isLeader(userId) ? 'Role: Leader' : 'Role: Member'
   ].filter(Boolean).join('\n');
@@ -287,32 +290,18 @@ function logGiftCodeDebug(message, details = {}) {
   console.log('[giftcode]', message, details);
 }
 
-function extractPlayerInfo(playerResponse, fallbackPlayerId) {
-  const data = playerResponse?.data?.data;
-  if (!data) {
-    return {
-      playerId: String(fallbackPlayerId),
-      nickname: '',
-      kid: null,
-      stoveLv: null
-    };
-  }
-
-  return {
-    playerId: String(data.fid || fallbackPlayerId),
-    nickname: data.nickname || '',
-    kid: data.kid ?? null,
-    stoveLv: data.stove_lv ?? null
+async function saveGiftCodePlayerKingdom(playerId, kingdomId) {
+  const existing = await getGiftCodePlayer(playerId);
+  const info = {
+    playerId: String(playerId),
+    nickname: existing?.nickname || '',
+    kid: Number(kingdomId),
+    stoveLv: existing?.stoveLv ?? null,
+    active: true
   };
-}
 
-async function registerGiftCodePlayer(playerId) {
-  const player = await lookupPlayer(playerId);
-  if (!player.ok) return { ok: false, player };
-
-  const info = extractPlayerInfo(player, playerId);
   await upsertGiftCodePlayer(info);
-  return { ok: true, player, info };
+  return info;
 }
 
 function isGiftCodeTerminalStatus(status) {
@@ -328,7 +317,7 @@ function isGiftCodeAttemptCoolingDown(redemption, nowMs = Date.now()) {
 function classifyGiftCodeFailure(errCode, message) {
   const normalized = String(message || '').toLowerCase();
 
-  if (['40001', '40002'].includes(errCode) || normalized.includes('already claimed') || normalized.includes('already redeemed')) {
+  if (['40001', '40002', '40008'].includes(errCode) || normalized.includes('already claimed') || normalized.includes('already redeemed') || normalized.includes('received')) {
     return 'already_redeemed';
   }
   if (['40003', '40015'].includes(errCode) || normalized.includes('expired')) {
@@ -346,7 +335,7 @@ function classifyGiftCodeFailure(errCode, message) {
   if (errCode === '40007' || normalized.includes('town center')) {
     return 'town_center_too_low';
   }
-  if (['40008', '40011'].includes(errCode) || normalized.includes('redemption requirements')) {
+  if (errCode === '40011' || normalized.includes('redemption requirements')) {
     return 'requirements_unmet';
   }
   if (errCode === '40012' || normalized.includes('account age')) {
@@ -362,10 +351,10 @@ function classifyGiftCodeFailure(errCode, message) {
   return 'failed';
 }
 
-async function recordGiftCodeResult(playerId, code, result) {
+async function recordGiftCodeResult(playerId, code, result, forcedStatus = null) {
   const raw = result.redeem?.data || result.player?.data || {};
   const errCode = raw.err_code == null ? null : String(raw.err_code);
-  const status = result.ok ? 'success' : classifyGiftCodeFailure(errCode, result.message || raw.msg);
+  const status = forcedStatus || (result.ok ? 'success' : classifyGiftCodeFailure(errCode, result.message || raw.msg));
 
   await saveGiftCodeRedemption({
     playerId,
@@ -376,7 +365,11 @@ async function recordGiftCodeResult(playerId, code, result) {
   });
 }
 
-async function redeemCodeForPlayer(playerId, code) {
+async function redeemCodeForPlayer(player, code) {
+  const playerId = player.playerId || player;
+  const playerInfo = typeof player === 'object'
+    ? player
+    : { playerId: String(playerId), nickname: '', kid: null, stoveLv: null };
   const existing = await getGiftCodeRedemption(playerId, code);
   if (existing && (isGiftCodeTerminalStatus(existing.status) || isGiftCodeAttemptCoolingDown(existing))) {
     logGiftCodeDebug('skip saved/cooling redemption', {
@@ -389,27 +382,43 @@ async function redeemCodeForPlayer(playerId, code) {
       ok: false,
       skipped: true,
       message: `Skipped saved result: ${existing.status}`,
-      playerInfo: { playerId: String(playerId), nickname: '', kid: null, stoveLv: null }
+      playerInfo
     };
   }
 
-  const result = await redeemGiftCode(playerId, code);
+  if (playerInfo.kid == null || playerInfo.kid === '') {
+    const result = {
+      ok: false,
+      step: 'config',
+      player: null,
+      redeem: null,
+      message: 'Missing kingdom id for saved player.'
+    };
+    await recordGiftCodeResult(playerInfo.playerId, code, result, 'missing_kingdom_id');
+    return {
+      ...result,
+      playerInfo,
+      previousStatus: existing?.status || null,
+      newSuccessfulRedemption: false
+    };
+  }
+
+  const result = await redeemGiftCode(playerId, code, playerInfo.kid);
   const raw = result.redeem?.data || result.player?.data || {};
   logGiftCodeDebug('redeem result', {
     playerId: String(playerId),
     code,
+    kid: playerInfo.kid,
     ok: result.ok,
     step: result.step,
     message: result.message,
     errCode: raw.err_code || null
   });
 
-  const info = extractPlayerInfo(result.player, playerId);
-  if (result.player?.ok) await upsertGiftCodePlayer(info);
-  await recordGiftCodeResult(info.playerId, code, result);
+  await recordGiftCodeResult(playerInfo.playerId, code, result);
   return {
     ...result,
-    playerInfo: info,
+    playerInfo,
     previousStatus: existing?.status || null,
     newSuccessfulRedemption: result.ok && existing?.status !== 'success'
   };
@@ -537,7 +546,7 @@ async function runGiftCodeWorker() {
         previousStatus: next.redemption?.status || null
       });
 
-      const result = await redeemCodeForPlayer(next.player.playerId, next.code.code);
+      const result = await redeemCodeForPlayer(next.player, next.code.code);
       if (result.newSuccessfulRedemption) {
         queueGiftCodeNotification(next.code.code, result.playerInfo);
       }
@@ -561,10 +570,11 @@ function startGiftCodeWorker() {
   }, 0);
 }
 
-async function syncGiftCodes(playerId) {
+async function syncGiftCodes(playerId, kingdomId = defaultGiftCodeKingdomId) {
   let registered = null;
   if (playerId) {
-    registered = await registerGiftCodePlayer(playerId);
+    const info = await saveGiftCodePlayerKingdom(playerId, kingdomId);
+    registered = { ok: true, player: null, info };
   }
 
   if (registered && !registered.ok) {
@@ -835,6 +845,7 @@ async function handleChatCommand(interaction) {
     const subcommand = interaction.options.getSubcommand(false);
     const playerId = interaction.options.getString('player_id', false)?.trim();
     const code = interaction.options.getString('code', false)?.trim();
+    const kingdom = interaction.options.getInteger('kingdom', false) || defaultGiftCodeKingdomId;
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -845,7 +856,7 @@ async function handleChatCommand(interaction) {
       }
 
       if (!code) {
-        const result = await syncGiftCodes(playerId);
+        const result = await syncGiftCodes(playerId, kingdom);
         await interaction.editReply(formatGiftCodeSyncResult(result));
         return;
       }
@@ -858,15 +869,10 @@ async function handleChatCommand(interaction) {
       }
 
       await upsertGiftCodes([{ code, source: 'manual-command', expiresAt: null, active: true }]);
-      const result = await redeemGiftCode(playerId, code);
-      if (result.player?.ok) {
-        await upsertGiftCodePlayer(extractPlayerInfo(result.player, playerId));
-      }
-      await recordGiftCodeResult(playerId, code, result);
-      const player = result.player?.data?.data;
-      const playerLine = player
-        ? `Player: ${player.nickname || 'Unknown'} (${player.fid}) | State: ${player.kid || 'unknown'} | Town Center: ${player.stove_lv || 'unknown'}`
-        : `Player ID: ${playerId}`;
+      const player = await saveGiftCodePlayerKingdom(playerId, kingdom);
+
+      const result = await redeemCodeForPlayer(player, code);
+      const playerLine = `Player: ${player.nickname || 'Unknown'} (${player.playerId}) | State: ${player.kid || 'unknown'} | Town Center: ${player.stoveLv || 'unknown'}`;
       const raw = result.redeem?.data || result.player?.data;
       const statusLine = result.ok ? 'Status: Redeemed successfully.' : `Status: ${result.message}`;
       const codeLine = !result.ok && raw?.err_code ? `Error code: ${raw.err_code}` : null;

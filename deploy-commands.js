@@ -50,6 +50,13 @@ const commands = [
             .setDescription('Gift code to redeem. Leave empty to sync active codes.')
             .setRequired(false)
         )
+        .addIntegerOption((option) =>
+          option
+            .setName('kingdom')
+            .setDescription('Kingshot kingdom/state ID. Defaults to 342.')
+            .setMinValue(1)
+            .setRequired(false)
+        )
     )
     .addSubcommand((subcommand) =>
       subcommand

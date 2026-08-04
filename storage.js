@@ -183,6 +183,17 @@ async function getGiftCodePlayers() {
   return (data || []).map(mapGiftCodePlayerRow);
 }
 
+async function getGiftCodePlayer(playerId) {
+  const { data, error } = await supabase
+    .from('gift_code_players')
+    .select('player_id,nickname,kid,stove_lv,active')
+    .eq('player_id', String(playerId))
+    .maybeSingle();
+
+  if (error) throw error;
+  return data ? mapGiftCodePlayerRow(data) : null;
+}
+
 async function upsertGiftCodes(codes) {
   if (codes.length === 0) return;
 
@@ -285,6 +296,7 @@ module.exports = {
   saveReminders,
   upsertGiftCodePlayer,
   getGiftCodePlayers,
+  getGiftCodePlayer,
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemption,
