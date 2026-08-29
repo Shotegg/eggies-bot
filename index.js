@@ -149,6 +149,7 @@ function findSubscription(reminders, userId, eventKey) {
 
 function buildReminderActionRow(eventKey) {
   return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`sub:${eventKey}`).setLabel('Remind me').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`unsub:${eventKey}`).setLabel("Don't remind me").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`info:${eventKey}`).setLabel('Info').setStyle(ButtonStyle.Secondary)
   );
@@ -1097,6 +1098,42 @@ async function handleButton(interaction) {
       content: before === next.length ? 'You were not subscribed to this event.' : `Unsubscribed from '${eventKey}' reminders.`,
       flags: MessageFlags.Ephemeral
     });
+    return;
+  }
+
+  if (action === 'sub') {
+    const event = await getEventByKey(eventKey);
+    if (!event || !event.nextAt) {
+      await interaction.reply({ content: 'Event or event time is missing.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const reminders = await getReminders();
+    const existing = reminders.find((r) => r.userId === interaction.user.id && r.eventKey === eventKey);
+
+    if (existing) {
+      if (existing.active !== false) {
+        await interaction.reply({ content: `You are already subscribed to ${event.title}.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      existing.active = true;
+      existing.channelId = reminderChannelId;
+      existing.lastNotifiedOccurrenceMs = null;
+      await saveReminders(reminders);
+      await interaction.reply({ content: `Reminder enabled. I will ping you every time for ${event.title}.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    reminders.push({
+      userId: interaction.user.id,
+      channelId: reminderChannelId,
+      eventKey,
+      active: true,
+      lastNotifiedOccurrenceMs: null
+    });
+    await saveReminders(reminders);
+    await interaction.reply({ content: `Reminder enabled. I will ping you every time for ${event.title}.`, flags: MessageFlags.Ephemeral });
     return;
   }
 
