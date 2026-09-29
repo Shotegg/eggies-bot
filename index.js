@@ -22,6 +22,7 @@ const {
   upsertGiftCodePlayer,
   getGiftCodePlayers,
   getGiftCodePlayer,
+  updateGiftCodePlayerNickname,
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemption,
@@ -31,6 +32,7 @@ const {
 } = require('./storage');
 const { startKeepAlive } = require('./keepAlive');
 const { fetchActiveGiftCodes, redeemGiftCode } = require('./giftCodes');
+const { fetchPlayerName } = require('./mightPulse');
 
 const token = process.env.DISCORD_TOKEN;
 const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
@@ -62,8 +64,11 @@ const reminderMinPollIntervalMs = Number(process.env.REMINDER_MIN_POLL_INTERVAL_
 const reminderMaxPollIntervalMs = Number(process.env.REMINDER_MAX_POLL_INTERVAL_MS || 900000);
 const reminderWakeBufferMs = Number(process.env.REMINDER_WAKE_BUFFER_MS || 5000);
 const giftCodeDebug = process.env.GIFT_CODE_DEBUG === 'true';
+const mightPulseApiKey = (process.env.MIGHTPULSE_API_KEY || '').trim();
+const mightPulseNameSyncIntervalMs = Number(process.env.MIGHTPULSE_NAME_SYNC_INTERVAL_MS || 86400000);
 let giftCodeWorkerRunning = false;
 let giftCodeScanRunning = false;
+let playerNameSyncRunning = false;
 let lastGiftCodeScanMs = 0;
 const giftCodeNotificationBuffer = new Map();
 let giftCodeNotificationTimer = null;
@@ -80,6 +85,7 @@ client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   maybeScanGiftCodesInBackground('startup');
   scheduleGiftCodeAutoScan();
+  schedulePlayerNameSync(5000);
 });
 
 function toEpochMs(value) {
@@ -282,13 +288,61 @@ function buildHelpContent(userId) {
   ].filter(Boolean).join('\n');
 }
 
+function logGiftCodeDebug(message, details = {}) {
+  if (!giftCodeDebug) return;
+  console.log('[giftcode]', message, details);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function logGiftCodeDebug(message, details = {}) {
-  if (!giftCodeDebug) return;
-  console.log('[giftcode]', message, details);
+async function syncGiftCodePlayerNames() {
+  if (!mightPulseApiKey) {
+    console.warn('MightPulse name sync is disabled: missing MIGHTPULSE_API_KEY.');
+    return;
+  }
+  if (playerNameSyncRunning) return;
+
+  playerNameSyncRunning = true;
+  try {
+    const players = await getGiftCodePlayers();
+    let updated = 0;
+    let skipped = 0;
+
+    for (const player of players) {
+      try {
+        const nickname = await fetchPlayerName(player.playerId, mightPulseApiKey);
+        if (nickname !== player.nickname) {
+          await updateGiftCodePlayerNickname(player.playerId, nickname);
+          updated += 1;
+        }
+      } catch (error) {
+        skipped += 1;
+        console.warn(`MightPulse name sync skipped player ${player.playerId}: ${error.message}`);
+
+        if (error.status === 401 || error.status === 429) break;
+      }
+
+      // The API permits 60 requests/minute; leave a small margin below that cap.
+      await sleep(1100);
+    }
+
+    console.log(`MightPulse name sync finished: ${updated} updated, ${skipped} skipped, ${players.length} checked.`);
+  } catch (error) {
+    console.error('MightPulse name sync failed:', error);
+  } finally {
+    playerNameSyncRunning = false;
+  }
+}
+
+function schedulePlayerNameSync(delayMs = mightPulseNameSyncIntervalMs) {
+  if (!Number.isFinite(mightPulseNameSyncIntervalMs) || mightPulseNameSyncIntervalMs <= 0) return;
+
+  setTimeout(async () => {
+    await syncGiftCodePlayerNames();
+    schedulePlayerNameSync(mightPulseNameSyncIntervalMs);
+  }, Math.max(5000, delayMs));
 }
 
 async function saveGiftCodePlayerKingdom(playerId, kingdomId) {

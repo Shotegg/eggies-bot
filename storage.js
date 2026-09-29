@@ -194,6 +194,15 @@ async function getGiftCodePlayer(playerId) {
   return data ? mapGiftCodePlayerRow(data) : null;
 }
 
+async function updateGiftCodePlayerNickname(playerId, nickname) {
+  const { error } = await supabase
+    .from('gift_code_players')
+    .update({ nickname })
+    .eq('player_id', String(playerId));
+
+  if (error) throw error;
+}
+
 async function upsertGiftCodes(codes) {
   if (codes.length === 0) return;
 
@@ -297,6 +306,7 @@ module.exports = {
   upsertGiftCodePlayer,
   getGiftCodePlayers,
   getGiftCodePlayer,
+  updateGiftCodePlayerNickname,
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemption,
