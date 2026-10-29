@@ -224,6 +224,15 @@ async function updateGiftCodePlayerMightPulseData(playerId, player) {
   if (error) throw error;
 }
 
+async function deleteGiftCodePlayer(playerId) {
+  const { error } = await supabase
+    .from('gift_code_players')
+    .delete()
+    .eq('player_id', String(playerId));
+
+  if (error) throw error;
+}
+
 async function saveWeeklyPowerSnapshot(weekStart, members) {
   if (members.length === 0) return;
 
@@ -374,6 +383,7 @@ module.exports = {
   getGiftCodePlayer,
   updateGiftCodePlayerNickname,
   updateGiftCodePlayerMightPulseData,
+  deleteGiftCodePlayer,
   saveWeeklyPowerSnapshot,
   getWeeklyPowerSnapshot,
   hasWeeklyPowerReport,

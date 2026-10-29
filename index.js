@@ -23,6 +23,7 @@ const {
   getGiftCodePlayers,
   getGiftCodePlayer,
   updateGiftCodePlayerMightPulseData,
+  deleteGiftCodePlayer,
   saveWeeklyPowerSnapshot,
   getWeeklyPowerSnapshot,
   hasWeeklyPowerReport,
@@ -369,7 +370,10 @@ async function syncEggAllianceRoster() {
   if (!mightPulseApiKey || allianceSyncRunning) return;
   allianceSyncRunning = true;
   try {
-    const [members, savedPlayers] = await Promise.all([getEggAllianceRoster(), getGiftCodePlayers()]);
+    const [members, savedPlayers] = await Promise.all([
+      getEggAllianceRoster(),
+      getGiftCodePlayers()
+    ]);
     const savedIds = new Set(savedPlayers.map((player) => String(player.playerId)));
     const missing = members.filter((member) => !savedIds.has(member.playerId));
     for (const member of missing) {
@@ -992,6 +996,79 @@ function formatGiftCodePlayerLines(players) {
     .map((player) => `${player.nickname || 'Unknown'} - ${player.playerId}`);
 }
 
+function buildGiftCodePlayerListRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('giftplayer:remove').setLabel('Browse players').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('giftplayer:search').setLabel('Search player').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function getGiftCodePlayerPage(players, page) {
+  const pageSize = 25;
+  const pageCount = Math.max(1, Math.ceil(players.length / pageSize));
+  const safePage = Math.max(0, Math.min(page, pageCount - 1));
+  return {
+    players: players.slice(safePage * pageSize, (safePage + 1) * pageSize),
+    page: safePage,
+    pageCount
+  };
+}
+
+function buildGiftCodePlayerRemovalComponents(players, page = 0) {
+  const selection = getGiftCodePlayerPage(players, page);
+  const options = selection.players.map((player) => ({
+    label: `${player.nickname || 'Unknown'} (${player.playerId})`.slice(0, 100),
+    description: `Kingdom ${player.kid || 'unknown'}${player.power == null ? '' : ` • ${formatPower(player.power)} power`}`.slice(0, 100),
+    value: String(player.playerId)
+  }));
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`giftplayer:select:${selection.page}`)
+    .setPlaceholder(`Choose a player to remove (${selection.page + 1}/${selection.pageCount})`)
+    .addOptions(options);
+  const components = [new ActionRowBuilder().addComponents(select)];
+
+  if (selection.pageCount > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`giftplayer:page:${selection.page - 1}`)
+        .setLabel('Previous')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(selection.page === 0),
+      new ButtonBuilder()
+        .setCustomId(`giftplayer:page:${selection.page + 1}`)
+        .setLabel('Next')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(selection.page >= selection.pageCount - 1)
+    ));
+  }
+  return components;
+}
+
+function buildGiftCodePlayerSearchComponents(players) {
+  const options = players.slice(0, 25).map((player) => ({
+    label: `${player.nickname || 'Unknown'} (${player.playerId})`.slice(0, 100),
+    description: `Kingdom ${player.kid || 'unknown'}${player.power == null ? '' : ` • ${formatPower(player.power)} power`}`.slice(0, 100),
+    value: String(player.playerId)
+  }));
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('giftplayer:selectsearch')
+    .setPlaceholder('Choose the player to remove')
+    .addOptions(options);
+  return [new ActionRowBuilder().addComponents(select)];
+}
+
+function showGiftCodePlayerSearchModal(interaction) {
+  const modal = new ModalBuilder().setCustomId('giftplayer:searchmodal').setTitle('Search gift code player');
+  const queryInput = new TextInputBuilder()
+    .setCustomId('query')
+    .setLabel('Player name or Player ID')
+    .setPlaceholder('Example: Shotegg or 123456789')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+  modal.addComponents(new ActionRowBuilder().addComponents(queryInput));
+  return interaction.showModal(modal);
+}
+
 async function replyGiftCodePlayerList(interaction) {
   const players = await getGiftCodePlayers();
   if (players.length === 0) {
@@ -1001,7 +1078,10 @@ async function replyGiftCodePlayerList(interaction) {
 
   const header = `Saved gift code players (${players.length})`;
   const chunks = chunkLines(header, formatGiftCodePlayerLines(players));
-  await interaction.editReply(chunks[0]);
+  await interaction.editReply({
+    content: chunks[0],
+    components: isLeader(interaction.user.id) ? [buildGiftCodePlayerListRow()] : []
+  });
   for (const chunk of chunks.slice(1)) {
     await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
   }
@@ -1241,6 +1321,31 @@ async function handleLeaderButton(interaction, action) {
 }
 
 async function handleSelectMenu(interaction) {
+  if (interaction.customId.startsWith('giftplayer:select')) {
+    if (!isLeader(interaction.user.id)) {
+      await interaction.reply({ content: 'Only leaders can remove gift code players.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const page = Number(interaction.customId.split(':')[2]) || 0;
+    const playerId = interaction.values[0];
+    const player = await getGiftCodePlayer(playerId);
+    if (!player) {
+      await interaction.update({ content: 'That player no longer exists.', components: [] });
+      return;
+    }
+
+    const confirmRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`giftplayerconfirm:yes:${player.playerId}`).setLabel('Yes, remove').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`giftplayerconfirm:cancel:${page}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    );
+    await interaction.update({
+      content: `Remove **${player.nickname || 'Unknown'}** (${player.playerId})? Their saved gift-code redemption history will also be deleted.`,
+      components: [confirmRow]
+    });
+    return;
+  }
+
   if (interaction.customId !== 'leader:edit_field_select') return;
   if (!isLeader(interaction.user.id)) {
     await interaction.reply({ content: 'Only leaders can use this action.', flags: MessageFlags.Ephemeral });
@@ -1312,6 +1417,70 @@ async function subscribeAllMembersToEvent(interaction, eventKey) {
 
 async function handleButton(interaction) {
   const [action, eventKey] = interaction.customId.split(':');
+
+  if (action === 'giftplayer') {
+    if (!isLeader(interaction.user.id)) {
+      await interaction.reply({ content: 'Only leaders can remove gift code players.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const playerAction = eventKey;
+    if (playerAction === 'remove') {
+      const players = await getGiftCodePlayers();
+      if (players.length === 0) {
+        await interaction.update({ content: 'No saved gift code players.', components: [] });
+        return;
+      }
+      await interaction.update({
+        content: 'Choose the player to remove:',
+        components: buildGiftCodePlayerRemovalComponents(players)
+      });
+      return;
+    }
+
+    if (playerAction === 'search') {
+      await showGiftCodePlayerSearchModal(interaction);
+      return;
+    }
+
+    if (playerAction === 'page') {
+      const page = Number(interaction.customId.split(':')[2]) || 0;
+      const players = await getGiftCodePlayers();
+      await interaction.update({
+        content: 'Choose the player to remove:',
+        components: buildGiftCodePlayerRemovalComponents(players, page)
+      });
+      return;
+    }
+  }
+
+  if (action === 'giftplayerconfirm') {
+    if (!isLeader(interaction.user.id)) {
+      await interaction.reply({ content: 'Only leaders can remove gift code players.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const [, confirmation, value] = interaction.customId.split(':');
+    if (confirmation === 'cancel') {
+      const players = await getGiftCodePlayers();
+      await interaction.update({
+        content: 'Choose the player to remove:',
+        components: buildGiftCodePlayerRemovalComponents(players, Number(value) || 0)
+      });
+      return;
+    }
+
+    if (confirmation === 'yes') {
+      const player = await getGiftCodePlayer(value);
+      if (!player) {
+        await interaction.update({ content: 'That player was already removed.', components: [] });
+        return;
+      }
+      await deleteGiftCodePlayer(value);
+      await interaction.update({ content: `Removed **${player.nickname || 'Unknown'}** (${player.playerId}).`, components: [] });
+      return;
+    }
+  }
 
   if (action === 'debugrole') {
     if (!isHardcodedLeader(interaction.user.id)) {
@@ -1515,6 +1684,30 @@ async function handleEditNextAtModal(interaction) {
 }
 
 async function handleModalSubmit(interaction) {
+  if (interaction.customId === 'giftplayer:searchmodal') {
+    if (!isLeader(interaction.user.id)) {
+      await interaction.reply({ content: 'Only leaders can remove gift code players.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const query = interaction.fields.getTextInputValue('query').trim().toLowerCase();
+    const matches = (await getGiftCodePlayers()).filter((player) => (
+      String(player.playerId).includes(query) || (player.nickname || '').toLowerCase().includes(query)
+    ));
+    if (matches.length === 0) {
+      await interaction.reply({ content: 'No saved player matches that name or ID.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const resultNote = matches.length > 25 ? ` Found ${matches.length}; showing the first 25—please refine your search.` : '';
+    await interaction.reply({
+      content: `Choose the player to remove.${resultNote}`,
+      components: buildGiftCodePlayerSearchComponents(matches),
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
   if (!isLeader(interaction.user.id)) {
     await interaction.reply({ content: 'Only leaders can use this action.', flags: MessageFlags.Ephemeral });
     return;
