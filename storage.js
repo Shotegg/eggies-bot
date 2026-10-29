@@ -61,6 +61,9 @@ function mapGiftCodePlayerRow(row) {
     nickname: row.nickname || '',
     kid: row.kid ?? null,
     stoveLv: row.stove_lv ?? null,
+    power: row.power == null ? null : Number(row.power),
+    allianceTag: row.alliance_tag || '',
+    allianceName: row.alliance_name || '',
     active: row.active !== false
   };
 }
@@ -165,6 +168,9 @@ async function upsertGiftCodePlayer(player) {
       nickname: player.nickname || '',
       kid: player.kid ?? null,
       stove_lv: player.stoveLv ?? null,
+      power: player.power ?? null,
+      alliance_tag: player.allianceTag || '',
+      alliance_name: player.allianceName || '',
       active: player.active !== false,
       last_seen_at: new Date().toISOString()
     }, { onConflict: 'player_id' });
@@ -175,7 +181,7 @@ async function upsertGiftCodePlayer(player) {
 async function getGiftCodePlayers() {
   const { data, error } = await supabase
     .from('gift_code_players')
-    .select('player_id,nickname,kid,stove_lv,active')
+    .select('player_id,nickname,kid,stove_lv,power,alliance_tag,alliance_name,active')
     .eq('active', true)
     .order('player_id', { ascending: true });
 
@@ -186,7 +192,7 @@ async function getGiftCodePlayers() {
 async function getGiftCodePlayer(playerId) {
   const { data, error } = await supabase
     .from('gift_code_players')
-    .select('player_id,nickname,kid,stove_lv,active')
+    .select('player_id,nickname,kid,stove_lv,power,alliance_tag,alliance_name,active')
     .eq('player_id', String(playerId))
     .maybeSingle();
 
@@ -199,6 +205,66 @@ async function updateGiftCodePlayerNickname(playerId, nickname) {
     .from('gift_code_players')
     .update({ nickname })
     .eq('player_id', String(playerId));
+
+  if (error) throw error;
+}
+
+async function updateGiftCodePlayerMightPulseData(playerId, player) {
+  const { error } = await supabase
+    .from('gift_code_players')
+    .update({
+      nickname: player.nickname,
+      power: player.power,
+      alliance_tag: player.allianceTag,
+      alliance_name: player.allianceName,
+      last_seen_at: new Date().toISOString()
+    })
+    .eq('player_id', String(playerId));
+
+  if (error) throw error;
+}
+
+async function saveWeeklyPowerSnapshot(weekStart, members) {
+  if (members.length === 0) return;
+
+  const rows = members.map((member) => ({
+    week_start: weekStart,
+    player_id: String(member.playerId),
+    nickname: member.nickname || '',
+    power: member.power
+  }));
+  const { error } = await supabase
+    .from('alliance_weekly_power_snapshots')
+    .upsert(rows, { onConflict: 'week_start,player_id' });
+
+  if (error) throw error;
+}
+
+async function getWeeklyPowerSnapshot(weekStart) {
+  const { data, error } = await supabase
+    .from('alliance_weekly_power_snapshots')
+    .select('week_start,player_id,nickname,power')
+    .eq('week_start', weekStart);
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function hasWeeklyPowerReport(weekStart) {
+  const { data, error } = await supabase
+    .from('alliance_weekly_power_reports')
+    .select('week_start')
+    .eq('week_start', weekStart)
+    .maybeSingle();
+
+  if (error) throw error;
+  return Boolean(data);
+}
+
+async function markWeeklyPowerReportSent(weekStart) {
+  const { error } = await supabase
+    .from('alliance_weekly_power_reports')
+    .upsert({ week_start: weekStart, sent_at: new Date().toISOString() }, { onConflict: 'week_start' });
 
   if (error) throw error;
 }
@@ -307,6 +373,11 @@ module.exports = {
   getGiftCodePlayers,
   getGiftCodePlayer,
   updateGiftCodePlayerNickname,
+  updateGiftCodePlayerMightPulseData,
+  saveWeeklyPowerSnapshot,
+  getWeeklyPowerSnapshot,
+  hasWeeklyPowerReport,
+  markWeeklyPowerReportSent,
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemption,

@@ -22,7 +22,11 @@ const {
   upsertGiftCodePlayer,
   getGiftCodePlayers,
   getGiftCodePlayer,
-  updateGiftCodePlayerNickname,
+  updateGiftCodePlayerMightPulseData,
+  saveWeeklyPowerSnapshot,
+  getWeeklyPowerSnapshot,
+  hasWeeklyPowerReport,
+  markWeeklyPowerReportSent,
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemption,
@@ -32,7 +36,8 @@ const {
 } = require('./storage');
 const { startKeepAlive } = require('./keepAlive');
 const { fetchActiveGiftCodes, redeemGiftCode } = require('./giftCodes');
-const { fetchPlayerName } = require('./mightPulse');
+const { fetchPlayer, fetchAllianceRoster } = require('./mightPulse');
+const { REPORT_TEMPLATES, applyTemplate } = require('./weeklyPowerReport');
 
 const token = process.env.DISCORD_TOKEN;
 const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
@@ -66,9 +71,15 @@ const reminderWakeBufferMs = Number(process.env.REMINDER_WAKE_BUFFER_MS || 5000)
 const giftCodeDebug = process.env.GIFT_CODE_DEBUG === 'true';
 const mightPulseApiKey = (process.env.MIGHTPULSE_API_KEY || '').trim();
 const mightPulseNameSyncIntervalMs = Number(process.env.MIGHTPULSE_NAME_SYNC_INTERVAL_MS || 86400000);
+const mightPulseAllianceSyncIntervalMs = Number(process.env.MIGHTPULSE_ALLIANCE_SYNC_INTERVAL_MS || 86400000);
+const mightPulseAllianceKingdomId = Number(process.env.MIGHTPULSE_ALLIANCE_KINGDOM_ID || 342);
+const mightPulseAllianceTag = (process.env.MIGHTPULSE_ALLIANCE_TAG || 'EGG').trim();
+const mightPulseWeeklyReportChannelId = (process.env.MIGHTPULSE_WEEKLY_REPORT_CHANNEL_ID || giftCodeNotifyChannelId || '').trim();
 let giftCodeWorkerRunning = false;
 let giftCodeScanRunning = false;
 let playerNameSyncRunning = false;
+let allianceSyncRunning = false;
+let weeklyPowerSnapshotRunning = false;
 let lastGiftCodeScanMs = 0;
 const giftCodeNotificationBuffer = new Map();
 let giftCodeNotificationTimer = null;
@@ -86,6 +97,7 @@ client.once(Events.ClientReady, (readyClient) => {
   maybeScanGiftCodesInBackground('startup');
   scheduleGiftCodeAutoScan();
   schedulePlayerNameSync(5000);
+  scheduleAllianceRosterSync(10000);
 });
 
 function toEpochMs(value) {
@@ -297,9 +309,9 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function syncGiftCodePlayerNames() {
+async function syncGiftCodePlayersFromMightPulse() {
   if (!mightPulseApiKey) {
-    console.warn('MightPulse name sync is disabled: missing MIGHTPULSE_API_KEY.');
+    console.warn('MightPulse player sync is disabled: missing MIGHTPULSE_API_KEY.');
     return;
   }
   if (playerNameSyncRunning) return;
@@ -312,9 +324,9 @@ async function syncGiftCodePlayerNames() {
 
     for (const player of players) {
       try {
-        const nickname = await fetchPlayerName(player.playerId, mightPulseApiKey);
-        if (nickname !== player.nickname) {
-          await updateGiftCodePlayerNickname(player.playerId, nickname);
+        const latest = await fetchPlayer(player.playerId, mightPulseApiKey);
+        if (latest.nickname !== player.nickname || latest.power !== player.power || latest.allianceTag !== player.allianceTag || latest.allianceName !== player.allianceName) {
+          await updateGiftCodePlayerMightPulseData(player.playerId, latest);
           updated += 1;
         }
       } catch (error) {
@@ -328,9 +340,9 @@ async function syncGiftCodePlayerNames() {
       await sleep(1100);
     }
 
-    console.log(`MightPulse name sync finished: ${updated} updated, ${skipped} skipped, ${players.length} checked.`);
+    console.log(`MightPulse player sync finished: ${updated} updated, ${skipped} skipped, ${players.length} checked.`);
   } catch (error) {
-    console.error('MightPulse name sync failed:', error);
+    console.error('MightPulse player sync failed:', error);
   } finally {
     playerNameSyncRunning = false;
   }
@@ -340,9 +352,183 @@ function schedulePlayerNameSync(delayMs = mightPulseNameSyncIntervalMs) {
   if (!Number.isFinite(mightPulseNameSyncIntervalMs) || mightPulseNameSyncIntervalMs <= 0) return;
 
   setTimeout(async () => {
-    await syncGiftCodePlayerNames();
+    await syncGiftCodePlayersFromMightPulse();
     schedulePlayerNameSync(mightPulseNameSyncIntervalMs);
   }, Math.max(5000, delayMs));
+}
+
+async function getEggAllianceRoster() {
+  if (!mightPulseApiKey) throw new Error('Missing MIGHTPULSE_API_KEY.');
+  if (!Number.isFinite(mightPulseAllianceKingdomId) || mightPulseAllianceKingdomId <= 0 || !mightPulseAllianceTag) {
+    throw new Error('Invalid MightPulse alliance configuration.');
+  }
+  return fetchAllianceRoster(mightPulseAllianceKingdomId, mightPulseAllianceTag, mightPulseApiKey);
+}
+
+async function syncEggAllianceRoster() {
+  if (!mightPulseApiKey || allianceSyncRunning) return;
+  allianceSyncRunning = true;
+  try {
+    const [members, savedPlayers] = await Promise.all([getEggAllianceRoster(), getGiftCodePlayers()]);
+    const savedIds = new Set(savedPlayers.map((player) => String(player.playerId)));
+    const missing = members.filter((member) => !savedIds.has(member.playerId));
+    for (const member of missing) {
+      await upsertGiftCodePlayer({
+        playerId: member.playerId,
+        nickname: member.nickname,
+        kid: mightPulseAllianceKingdomId,
+        stoveLv: null,
+        power: member.power,
+        allianceTag: mightPulseAllianceTag,
+        allianceName: '',
+        active: true
+      });
+    }
+    await maybeCaptureWeeklyEggPowerSnapshot(members);
+  } catch (error) {
+    console.error('MightPulse alliance roster sync failed:', error);
+  } finally {
+    allianceSyncRunning = false;
+  }
+}
+
+function scheduleAllianceRosterSync(delayMs = mightPulseAllianceSyncIntervalMs) {
+  if (!Number.isFinite(mightPulseAllianceSyncIntervalMs) || mightPulseAllianceSyncIntervalMs <= 0) return;
+  setTimeout(async () => {
+    await syncEggAllianceRoster();
+    scheduleAllianceRosterSync(mightPulseAllianceSyncIntervalMs);
+  }, Math.max(5000, delayMs));
+}
+
+function getAthensDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Athens',
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  return { weekday: values.weekday, date: `${values.year}-${values.month}-${values.day}` };
+}
+
+function getPreviousSundayDate(dateString) {
+  const date = new Date(`${dateString}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - 7);
+  return date.toISOString().slice(0, 10);
+}
+
+function isPushWeek(reportDate) {
+  const firstPushReportMs = Date.parse('2026-11-08T00:00:00Z');
+  const reportMs = Date.parse(`${reportDate}T00:00:00Z`);
+  const weeksSinceFirstPush = Math.round((reportMs - firstPushReportMs) / (7 * 24 * 60 * 60 * 1000));
+  return weeksSinceFirstPush >= 0 && weeksSinceFirstPush % 4 === 0;
+}
+
+function formatPower(value) {
+  const abs = Math.abs(Number(value));
+  if (abs >= 1_000_000_000) return `${(abs / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${(abs / 1_000).toFixed(1)}K`;
+  return String(abs);
+}
+
+function formatSignedPower(value) {
+  return `${Number(value) >= 0 ? '+' : '-'}${formatPower(value)}`;
+}
+
+function formatPercent(value) {
+  return `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
+}
+
+function formatMetricPlayer(player, metric, isPercent = false) {
+  const metricValue = isPercent ? formatPercent(player[metric]) : formatSignedPower(player[metric]);
+  return `**${player.nickname || 'Unknown'}** — ${metricValue}`;
+}
+
+function buildWeeklyPowerReport(currentRows, previousRows, reportDate) {
+  const previousByPlayerId = new Map(previousRows.map((row) => [String(row.player_id), row]));
+  const comparisons = currentRows
+    .map((current) => {
+      const previous = previousByPlayerId.get(String(current.player_id));
+      if (!previous || current.power == null || previous.power == null) return null;
+      const currentPower = Number(current.power);
+      const previousPower = Number(previous.power);
+      if (!Number.isFinite(currentPower) || !Number.isFinite(previousPower)) return null;
+      const gain = currentPower - previousPower;
+      return {
+        playerId: String(current.player_id),
+        nickname: current.nickname || previous.nickname || 'Unknown',
+        gain,
+        percentageGain: previousPower > 0 ? (gain / previousPower) * 100 : null
+      };
+    })
+    .filter(Boolean);
+
+  const template = isPushWeek(reportDate) ? REPORT_TEMPLATES.push : REPORT_TEMPLATES.normal;
+  if (comparisons.length === 0) {
+    return `${template.title}\n\nNo comparable EGG members were available for this week.`;
+  }
+
+  const nonNegative = comparisons.filter((player) => player.gain >= 0);
+  const percentagePlayers = nonNegative.filter((player) => Number.isFinite(player.percentageGain));
+  const losses = comparisons.filter((player) => player.gain < 0).sort((a, b) => a.gain - b.gain);
+  const lines = [template.title, `Period: ${getPreviousSundayDate(reportDate)} → ${reportDate}`];
+
+  if (nonNegative.length > 0) {
+    const biggest = nonNegative.slice().sort((a, b) => b.gain - a.gain)[0];
+    const smallest = nonNegative.slice().sort((a, b) => a.gain - b.gain)[0];
+    lines.push('', template.biggestGain, formatMetricPlayer(biggest, 'gain'), applyTemplate(template.highGainMessage, { name: biggest.nickname }));
+    lines.push('', template.smallestGain, formatMetricPlayer(smallest, 'gain'), applyTemplate(template.lowGainMessage, { name: smallest.nickname }));
+  }
+
+  if (percentagePlayers.length > 0) {
+    const biggestPercentage = percentagePlayers.slice().sort((a, b) => b.percentageGain - a.percentageGain)[0];
+    const smallestPercentage = percentagePlayers.slice().sort((a, b) => a.percentageGain - b.percentageGain)[0];
+    lines.push('', template.bestPercentage, formatMetricPlayer(biggestPercentage, 'percentageGain', true), applyTemplate(template.highGainMessage, { name: biggestPercentage.nickname }));
+    lines.push('', template.smallestPercentage, formatMetricPlayer(smallestPercentage, 'percentageGain', true), applyTemplate(template.lowGainMessage, { name: smallestPercentage.nickname }));
+  }
+
+  if (losses.length > 0) {
+    lines.push('', template.losses);
+    for (const player of losses.slice(0, 3)) {
+      lines.push(formatMetricPlayer(player, 'gain'), applyTemplate(template.lossMessage, { name: player.nickname, power: formatPower(player.gain) }));
+    }
+  }
+
+  return lines.join('\n');
+}
+
+async function sendWeeklyPowerReport(reportDate) {
+  if (!mightPulseWeeklyReportChannelId || await hasWeeklyPowerReport(reportDate)) return;
+
+  const previousDate = getPreviousSundayDate(reportDate);
+  const [currentRows, previousRows] = await Promise.all([
+    getWeeklyPowerSnapshot(reportDate),
+    getWeeklyPowerSnapshot(previousDate)
+  ]);
+  if (currentRows.length === 0 || previousRows.length === 0) return;
+
+  const channel = await client.channels.fetch(mightPulseWeeklyReportChannelId);
+  if (!channel || !channel.isTextBased()) throw new Error('MIGHTPULSE_WEEKLY_REPORT_CHANNEL_ID is not a text channel.');
+  await channel.send(buildWeeklyPowerReport(currentRows, previousRows, reportDate));
+  await markWeeklyPowerReportSent(reportDate);
+}
+
+async function maybeCaptureWeeklyEggPowerSnapshot(members) {
+  const today = getAthensDateParts();
+  if (today.weekday !== 'Sun' || !mightPulseApiKey || weeklyPowerSnapshotRunning) return;
+
+  weeklyPowerSnapshotRunning = true;
+  try {
+    await saveWeeklyPowerSnapshot(today.date, members);
+    console.log(`MightPulse weekly [${mightPulseAllianceTag}] power snapshot saved: ${members.length} members for ${today.date}.`);
+    await sendWeeklyPowerReport(today.date);
+  } catch (error) {
+    console.error('MightPulse weekly power snapshot failed:', error);
+  } finally {
+    weeklyPowerSnapshotRunning = false;
+  }
 }
 
 async function saveGiftCodePlayerKingdom(playerId, kingdomId) {
@@ -352,6 +538,9 @@ async function saveGiftCodePlayerKingdom(playerId, kingdomId) {
     nickname: existing?.nickname || '',
     kid: Number(kingdomId),
     stoveLv: existing?.stoveLv ?? null,
+    power: existing?.power ?? null,
+    allianceTag: existing?.allianceTag || '',
+    allianceName: existing?.allianceName || '',
     active: true
   };
 
