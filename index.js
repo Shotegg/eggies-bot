@@ -74,7 +74,8 @@ const mightPulseApiKey = (process.env.MIGHTPULSE_API_KEY || '').trim();
 const mightPulseNameSyncIntervalMs = Number(process.env.MIGHTPULSE_NAME_SYNC_INTERVAL_MS || 86400000);
 const mightPulseAllianceSyncIntervalMs = Number(process.env.MIGHTPULSE_ALLIANCE_SYNC_INTERVAL_MS || 86400000);
 const mightPulseAllianceKingdomId = Number(process.env.MIGHTPULSE_ALLIANCE_KINGDOM_ID || 342);
-const mightPulseAllianceTag = (process.env.MIGHTPULSE_ALLIANCE_TAG || 'EGG').trim();
+// Alliance tags are case-sensitive in MightPulse. This bot tracks only [EGG].
+const mightPulseAllianceTag = (process.env.MIGHTPULSE_ALLIANCE_TAG || 'EGG').trim().toUpperCase();
 const mightPulseWeeklyReportChannelId = (process.env.MIGHTPULSE_WEEKLY_REPORT_CHANNEL_ID || giftCodeNotifyChannelId || '').trim();
 let giftCodeWorkerRunning = false;
 let giftCodeScanRunning = false;
