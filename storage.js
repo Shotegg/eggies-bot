@@ -249,6 +249,25 @@ async function saveWeeklyPowerSnapshot(weekStart, members) {
   if (error) throw error;
 }
 
+async function hasMightPulseDailySync(syncDate) {
+  const { data, error } = await supabase
+    .from('mightpulse_daily_syncs')
+    .select('sync_date')
+    .eq('sync_date', syncDate)
+    .maybeSingle();
+
+  if (error) throw error;
+  return Boolean(data);
+}
+
+async function markMightPulseDailySyncComplete(syncDate) {
+  const { error } = await supabase
+    .from('mightpulse_daily_syncs')
+    .upsert({ sync_date: syncDate, completed_at: new Date().toISOString() }, { onConflict: 'sync_date' });
+
+  if (error) throw error;
+}
+
 async function getWeeklyPowerSnapshot(weekStart) {
   const { data, error } = await supabase
     .from('alliance_weekly_power_snapshots')
@@ -385,6 +404,8 @@ module.exports = {
   updateGiftCodePlayerMightPulseData,
   deleteGiftCodePlayer,
   saveWeeklyPowerSnapshot,
+  hasMightPulseDailySync,
+  markMightPulseDailySyncComplete,
   getWeeklyPowerSnapshot,
   hasWeeklyPowerReport,
   markWeeklyPowerReportSent,

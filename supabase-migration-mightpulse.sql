@@ -17,8 +17,15 @@ create table if not exists public.alliance_weekly_power_reports (
   sent_at timestamptz not null default now()
 );
 
+create table if not exists public.mightpulse_daily_syncs (
+  sync_date date primary key,
+  completed_at timestamptz not null default now()
+);
+
 alter table public.alliance_weekly_power_snapshots enable row level security;
 alter table public.alliance_weekly_power_reports enable row level security;
+alter table public.mightpulse_daily_syncs enable row level security;
 
 grant select, insert, update, delete on table public.alliance_weekly_power_snapshots to service_role;
 grant select, insert, update, delete on table public.alliance_weekly_power_reports to service_role;
+grant select, insert, update, delete on table public.mightpulse_daily_syncs to service_role;
