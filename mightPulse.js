@@ -7,47 +7,11 @@ function buildApiError(message, status) {
   return error;
 }
 
-async function fetchPlayer(governorId, apiKey) {
-  const url = new URL(`${API_BASE_URL}/players/${encodeURIComponent(String(governorId))}`);
-  url.searchParams.set('include', 'base');
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(url, {
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${apiKey}`
-      },
-      signal: controller.signal
-    });
-
-    if (!response.ok) {
-      throw buildApiError(`MightPulse returned HTTP ${response.status}`, response.status);
-    }
-
-    const data = await response.json();
-    const player = data?.player;
-    const nickname = player?.nick_name;
-    if (typeof nickname !== 'string' || !nickname.trim()) {
-      throw buildApiError('MightPulse response did not include a player nickname.', response.status);
-    }
-
-    return {
-      nickname: nickname.trim(),
-      power: Number.isFinite(Number(player.power)) ? Number(player.power) : null,
-      allianceTag: typeof player.alliance?.abbr === 'string' ? player.alliance.abbr : '',
-      allianceName: typeof player.alliance?.name === 'string' ? player.alliance.name : ''
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function fetchAllianceRoster(kingdomId, allianceTag, apiKey) {
+async function fetchAllianceRoster(kingdomId, allianceTag, apiKey, maxAgeSeconds = 86400) {
   const url = new URL(`${API_BASE_URL}/alliances/${encodeURIComponent(String(kingdomId))}/${encodeURIComponent(allianceTag)}`);
-  url.searchParams.set('include', 'info,roster');
+  // members_base refreshes every member's base stats in one API request.
+  url.searchParams.set('include', 'info,members_base');
+  url.searchParams.set('max_age', String(maxAgeSeconds));
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -70,14 +34,19 @@ async function fetchAllianceRoster(kingdomId, allianceTag, apiKey) {
       throw buildApiError('MightPulse alliance response did not include a roster.', response.status);
     }
 
-    return data.members.map((member) => ({
-      playerId: String(member.governor_id),
-      nickname: typeof member.nick_name === 'string' ? member.nick_name.trim() : '',
-      power: Number.isFinite(Number(member.power)) ? Number(member.power) : null
-    })).filter((member) => member.playerId && member.playerId !== 'undefined');
+    return {
+      allianceTag: typeof data.alliance?.abbr === 'string' ? data.alliance.abbr : allianceTag,
+      allianceName: typeof data.alliance?.name === 'string' ? data.alliance.name : '',
+      members: data.members.map((member) => ({
+        playerId: String(member.governor_id),
+        nickname: typeof member.nick_name === 'string' ? member.nick_name.trim() : '',
+        power: Number.isFinite(Number(member.power)) ? Number(member.power) : null,
+        stoveLv: Number.isFinite(Number(member.town_center_level)) ? Number(member.town_center_level) : null
+      })).filter((member) => member.playerId && member.playerId !== 'undefined')
+    };
   } finally {
     clearTimeout(timeout);
   }
 }
 
-module.exports = { fetchPlayer, fetchAllianceRoster };
+module.exports = { fetchAllianceRoster };

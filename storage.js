@@ -178,6 +178,28 @@ async function upsertGiftCodePlayer(player) {
   if (error) throw error;
 }
 
+async function upsertGiftCodePlayers(players) {
+  if (players.length === 0) return;
+
+  const seenAt = new Date().toISOString();
+  const rows = players.map((player) => ({
+    player_id: String(player.playerId),
+    nickname: player.nickname || '',
+    kid: player.kid ?? null,
+    stove_lv: player.stoveLv ?? null,
+    power: player.power ?? null,
+    alliance_tag: player.allianceTag || '',
+    alliance_name: player.allianceName || '',
+    active: player.active !== false,
+    last_seen_at: seenAt
+  }));
+  const { error } = await supabase
+    .from('gift_code_players')
+    .upsert(rows, { onConflict: 'player_id' });
+
+  if (error) throw error;
+}
+
 async function getGiftCodePlayers() {
   const { data, error } = await supabase
     .from('gift_code_players')
@@ -204,21 +226,6 @@ async function updateGiftCodePlayerNickname(playerId, nickname) {
   const { error } = await supabase
     .from('gift_code_players')
     .update({ nickname })
-    .eq('player_id', String(playerId));
-
-  if (error) throw error;
-}
-
-async function updateGiftCodePlayerMightPulseData(playerId, player) {
-  const { error } = await supabase
-    .from('gift_code_players')
-    .update({
-      nickname: player.nickname,
-      power: player.power,
-      alliance_tag: player.allianceTag,
-      alliance_name: player.allianceName,
-      last_seen_at: new Date().toISOString()
-    })
     .eq('player_id', String(playerId));
 
   if (error) throw error;
@@ -398,10 +405,10 @@ module.exports = {
   getReminders,
   saveReminders,
   upsertGiftCodePlayer,
+  upsertGiftCodePlayers,
   getGiftCodePlayers,
   getGiftCodePlayer,
   updateGiftCodePlayerNickname,
-  updateGiftCodePlayerMightPulseData,
   deleteGiftCodePlayer,
   saveWeeklyPowerSnapshot,
   hasMightPulseDailySync,

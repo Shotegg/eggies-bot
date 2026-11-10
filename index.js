@@ -20,9 +20,9 @@ const {
   getReminders,
   saveReminders,
   upsertGiftCodePlayer,
+  upsertGiftCodePlayers,
   getGiftCodePlayers,
   getGiftCodePlayer,
-  updateGiftCodePlayerMightPulseData,
   deleteGiftCodePlayer,
   saveWeeklyPowerSnapshot,
   hasMightPulseDailySync,
@@ -39,7 +39,7 @@ const {
 } = require('./storage');
 const { startKeepAlive } = require('./keepAlive');
 const { fetchActiveGiftCodes, redeemGiftCode } = require('./giftCodes');
-const { fetchPlayer, fetchAllianceRoster } = require('./mightPulse');
+const { fetchAllianceRoster } = require('./mightPulse');
 const { REPORT_TEMPLATES, applyTemplate } = require('./weeklyPowerReport');
 
 const token = process.env.DISCORD_TOKEN;
@@ -80,7 +80,6 @@ const mightPulseWeeklyReportChannelId = (process.env.MIGHTPULSE_WEEKLY_REPORT_CH
 const mightPulseRecoveryCheckIntervalMs = Number(process.env.MIGHTPULSE_RECOVERY_CHECK_INTERVAL_MS || 7200000);
 let giftCodeWorkerRunning = false;
 let giftCodeScanRunning = false;
-let playerNameSyncRunning = false;
 let allianceSyncRunning = false;
 let weeklyPowerSnapshotRunning = false;
 let mightPulseDailySyncRunning = false;
@@ -312,45 +311,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function syncGiftCodePlayersFromMightPulse() {
-  if (!mightPulseApiKey) {
-    console.warn('MightPulse player sync is disabled: missing MIGHTPULSE_API_KEY.');
-    return;
-  }
-  if (playerNameSyncRunning) return;
-
-  playerNameSyncRunning = true;
-  try {
-    const players = await getGiftCodePlayers();
-    let updated = 0;
-    let skipped = 0;
-
-    for (const player of players) {
-      try {
-        const latest = await fetchPlayer(player.playerId, mightPulseApiKey);
-        if (latest.nickname !== player.nickname || latest.power !== player.power || latest.allianceTag !== player.allianceTag || latest.allianceName !== player.allianceName) {
-          await updateGiftCodePlayerMightPulseData(player.playerId, latest);
-          updated += 1;
-        }
-      } catch (error) {
-        skipped += 1;
-        console.warn(`MightPulse name sync skipped player ${player.playerId}: ${error.message}`);
-
-        if (error.status === 401 || error.status === 429) break;
-      }
-
-      // The API permits 60 requests/minute; leave a small margin below that cap.
-      await sleep(1100);
-    }
-
-    console.log(`MightPulse player sync finished: ${updated} updated, ${skipped} skipped, ${players.length} checked.`);
-  } catch (error) {
-    console.error('MightPulse player sync failed:', error);
-  } finally {
-    playerNameSyncRunning = false;
-  }
-}
-
 async function getEggAllianceRoster() {
   if (!mightPulseApiKey) throw new Error('Missing MIGHTPULSE_API_KEY.');
   if (!Number.isFinite(mightPulseAllianceKingdomId) || mightPulseAllianceKingdomId <= 0 || !mightPulseAllianceTag) {
@@ -364,25 +324,27 @@ async function syncEggAllianceRoster() {
   if (allianceSyncRunning) throw new Error('MightPulse alliance roster sync is already running.');
   allianceSyncRunning = true;
   try {
-    const [members, savedPlayers] = await Promise.all([
+    const [roster, savedPlayers] = await Promise.all([
       getEggAllianceRoster(),
       getGiftCodePlayers()
     ]);
-    const savedIds = new Set(savedPlayers.map((player) => String(player.playerId)));
-    const missing = members.filter((member) => !savedIds.has(member.playerId));
-    for (const member of missing) {
-      await upsertGiftCodePlayer({
+    const savedById = new Map(savedPlayers.map((player) => [String(player.playerId), player]));
+    const players = roster.members.map((member) => {
+      const saved = savedById.get(member.playerId);
+      return {
         playerId: member.playerId,
         nickname: member.nickname,
         kid: mightPulseAllianceKingdomId,
-        stoveLv: null,
+        stoveLv: member.stoveLv ?? saved?.stoveLv ?? null,
         power: member.power,
-        allianceTag: mightPulseAllianceTag,
-        allianceName: '',
+        allianceTag: roster.allianceTag || mightPulseAllianceTag,
+        allianceName: roster.allianceName,
         active: true
-      });
-    }
-    return members;
+      };
+    });
+    await upsertGiftCodePlayers(players);
+    console.log(`MightPulse alliance sync finished: ${players.length} members updated from one API request.`);
+    return roster.members;
   } catch (error) {
     console.error('MightPulse alliance roster sync failed:', error);
     throw error;
@@ -575,7 +537,6 @@ async function runMightPulseDailySyncIfDue() {
 
   mightPulseDailySyncRunning = true;
   try {
-    await syncGiftCodePlayersFromMightPulse();
     const members = await syncEggAllianceRoster();
     await captureSaturdayPowerSnapshot(members, today.date);
     await markMightPulseDailySyncComplete(today.date);
