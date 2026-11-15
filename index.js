@@ -22,6 +22,7 @@ const {
   upsertGiftCodePlayer,
   upsertGiftCodePlayers,
   getGiftCodePlayers,
+  getGiftCodePlayersForKingdom,
   getGiftCodePlayer,
   deleteGiftCodePlayer,
   saveWeeklyPowerSnapshot,
@@ -30,6 +31,8 @@ const {
   getWeeklyPowerSnapshot,
   hasWeeklyPowerReport,
   markWeeklyPowerReportSent,
+  getLatestKingdomSnapshot,
+  saveKingdomSnapshot,
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemption,
@@ -50,6 +53,8 @@ const leaderIds = (process.env.LEADER_IDS || '')
   .map((id) => id.trim())
   .filter(Boolean);
 const debugMemberUserIds = new Set();
+const snapshotUserId = '612726128137863169';
+const snapshotKingdomId = 342;
 const giftCodeTerminalStatuses = new Set([
   'success',
   'already_redeemed',
@@ -74,8 +79,14 @@ const reminderWakeBufferMs = Number(process.env.REMINDER_WAKE_BUFFER_MS || 5000)
 const giftCodeDebug = process.env.GIFT_CODE_DEBUG === 'true';
 const mightPulseApiKey = (process.env.MIGHTPULSE_API_KEY || '').trim();
 const mightPulseAllianceKingdomId = Number(process.env.MIGHTPULSE_ALLIANCE_KINGDOM_ID || 342);
-// Alliance tags are case-sensitive in MightPulse. This bot tracks only [EGG].
+// The primary alliance remains the source for weekly reports.
 const mightPulseAllianceTag = (process.env.MIGHTPULSE_ALLIANCE_TAG || 'EGG').trim().toUpperCase();
+// Each alliance is fetched with its own single roster request. Keep EGG first so
+// existing weekly-report behavior continues to use it as the primary alliance.
+const mightPulseGiftCodeAllianceTags = [...new Set((process.env.MIGHTPULSE_GIFTCODE_ALLIANCE_TAGS || `${mightPulseAllianceTag},EPC,PEN`)
+  .split(',')
+  .map((tag) => tag.trim().toUpperCase())
+  .filter(Boolean))];
 const mightPulseWeeklyReportChannelId = (process.env.MIGHTPULSE_WEEKLY_REPORT_CHANNEL_ID || giftCodeNotifyChannelId || '').trim();
 const mightPulseRecoveryCheckIntervalMs = Number(process.env.MIGHTPULSE_RECOVERY_CHECK_INTERVAL_MS || 7200000);
 let giftCodeWorkerRunning = false;
@@ -324,27 +335,37 @@ async function syncEggAllianceRoster() {
   if (allianceSyncRunning) throw new Error('MightPulse alliance roster sync is already running.');
   allianceSyncRunning = true;
   try {
-    const [roster, savedPlayers] = await Promise.all([
-      getEggAllianceRoster(),
+    if (mightPulseGiftCodeAllianceTags.length === 0) throw new Error('No MightPulse gift-code alliances configured.');
+
+    const [rosters, savedPlayers] = await Promise.all([
+      Promise.all(mightPulseGiftCodeAllianceTags.map((allianceTag) => (
+        fetchAllianceRoster(mightPulseAllianceKingdomId, allianceTag, mightPulseApiKey)
+      ))),
       getGiftCodePlayers()
     ]);
     const savedById = new Map(savedPlayers.map((player) => [String(player.playerId), player]));
-    const players = roster.members.map((member) => {
-      const saved = savedById.get(member.playerId);
-      return {
-        playerId: member.playerId,
-        nickname: member.nickname,
-        kid: mightPulseAllianceKingdomId,
-        stoveLv: member.stoveLv ?? saved?.stoveLv ?? null,
-        power: member.power,
-        allianceTag: roster.allianceTag || mightPulseAllianceTag,
-        allianceName: roster.allianceName,
-        active: true
-      };
-    });
+    const playersById = new Map();
+    for (const roster of rosters) {
+      for (const member of roster.members) {
+        const saved = savedById.get(member.playerId);
+        playersById.set(member.playerId, {
+          playerId: member.playerId,
+          nickname: member.nickname,
+          kid: mightPulseAllianceKingdomId,
+          stoveLv: member.stoveLv ?? saved?.stoveLv ?? null,
+          power: member.power,
+          allianceTag: roster.allianceTag,
+          allianceName: roster.allianceName,
+          active: true
+        });
+      }
+    }
+    const players = [...playersById.values()];
     await upsertGiftCodePlayers(players);
-    console.log(`MightPulse alliance sync finished: ${players.length} members updated from one API request.`);
-    return roster.members;
+    const eggRoster = rosters.find((roster) => roster.allianceTag.toUpperCase() === mightPulseAllianceTag)
+      || rosters.find((roster) => roster.allianceTag.toUpperCase() === 'EGG');
+    console.log(`MightPulse gift-code alliance sync finished: ${players.length} members updated from ${rosters.length} API requests (${mightPulseGiftCodeAllianceTags.join(', ')}).`);
+    return eggRoster?.members || [];
   } catch (error) {
     console.error('MightPulse alliance roster sync failed:', error);
     throw error;
@@ -1044,6 +1065,38 @@ function chunkLines(header, lines, maxLength = 1900) {
   return chunks;
 }
 
+function formatSnapshotPlayer(player) {
+  const name = player.nickname || 'Unknown';
+  const alliance = player.allianceTag || player.allianceName || 'No alliance';
+  return `- ${name} | ${player.playerId} | ${alliance}`;
+}
+
+function buildSnapshotReport(previousSnapshot, currentPlayers) {
+  if (!previousSnapshot) {
+    return [`Kingdom ${snapshotKingdomId} snapshot saved with ${currentPlayers.length} players. This is the baseline; the next snapshot will report arrivals and departures.`];
+  }
+
+  const previousById = new Map(previousSnapshot.players.map((player) => [String(player.player_id), player]));
+  const currentById = new Map(currentPlayers.map((player) => [String(player.playerId), player]));
+  const arrivals = currentPlayers.filter((player) => !previousById.has(String(player.playerId)));
+  const departures = previousSnapshot.players.filter((player) => !currentById.has(String(player.player_id)));
+  const header = `**Kingdom ${snapshotKingdomId} snapshot report**\nCurrent players: ${currentPlayers.length} | New: ${arrivals.length} | Left: ${departures.length}`;
+  const lines = [
+    '**New arrivals**',
+    ...(arrivals.length > 0 ? arrivals.map(formatSnapshotPlayer) : ['- None']),
+    '**Departures**',
+    ...(departures.length > 0 ? departures.map((player) => formatSnapshotPlayer({ ...player, playerId: player.player_id })) : ['- None'])
+  ];
+  return chunkLines(header, lines);
+}
+
+async function replySnapshotReport(interaction, messages) {
+  await interaction.editReply(messages[0]);
+  for (const message of messages.slice(1)) {
+    await interaction.followUp(message);
+  }
+}
+
 function formatGiftCodePlayerLines(players) {
   return players
     .slice()
@@ -1217,6 +1270,27 @@ async function handleChatCommand(interaction) {
 
     if (leader) response.components = [buildLeaderRow()];
     await interaction.reply(response);
+    return;
+  }
+
+  if (interaction.commandName === 'snapshot') {
+    if (interaction.user.id !== snapshotUserId) {
+      await interaction.reply({ content: 'You are not allowed to run snapshots.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    await interaction.deferReply();
+    try {
+      const [previousSnapshot, currentPlayers] = await Promise.all([
+        getLatestKingdomSnapshot(snapshotKingdomId),
+        getGiftCodePlayersForKingdom(snapshotKingdomId)
+      ]);
+      await saveKingdomSnapshot(snapshotKingdomId, currentPlayers);
+      await replySnapshotReport(interaction, buildSnapshotReport(previousSnapshot, currentPlayers));
+    } catch (error) {
+      console.error('Kingdom snapshot failed:', error);
+      await interaction.editReply('Could not save the kingdom snapshot. Check the Supabase snapshot tables and try again.');
+    }
     return;
   }
 

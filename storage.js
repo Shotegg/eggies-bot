@@ -211,6 +211,18 @@ async function getGiftCodePlayers() {
   return (data || []).map(mapGiftCodePlayerRow);
 }
 
+async function getGiftCodePlayersForKingdom(kingdomId) {
+  const { data, error } = await supabase
+    .from('gift_code_players')
+    .select('player_id,nickname,kid,stove_lv,power,alliance_tag,alliance_name,active')
+    .eq('active', true)
+    .eq('kid', kingdomId)
+    .order('player_id', { ascending: true });
+
+  if (error) throw error;
+  return (data || []).map(mapGiftCodePlayerRow);
+}
+
 async function getGiftCodePlayer(playerId) {
   const { data, error } = await supabase
     .from('gift_code_players')
@@ -302,6 +314,54 @@ async function markWeeklyPowerReportSent(weekStart) {
     .upsert({ week_start: weekStart, sent_at: new Date().toISOString() }, { onConflict: 'week_start' });
 
   if (error) throw error;
+}
+
+async function getLatestKingdomSnapshot(kingdomId) {
+  const { data: snapshot, error: snapshotError } = await supabase
+    .from('kingdom_player_snapshots')
+    .select('id,kingdom_id,taken_at')
+    .eq('kingdom_id', kingdomId)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (snapshotError) throw snapshotError;
+  if (!snapshot) return null;
+
+  const { data: players, error: playersError } = await supabase
+    .from('kingdom_player_snapshot_members')
+    .select('player_id,nickname,alliance_tag,alliance_name')
+    .eq('snapshot_id', snapshot.id)
+    .order('player_id', { ascending: true });
+
+  if (playersError) throw playersError;
+  return { id: snapshot.id, kingdomId: snapshot.kingdom_id, takenAt: snapshot.taken_at, players: players || [] };
+}
+
+async function saveKingdomSnapshot(kingdomId, players) {
+  const { data: snapshot, error: snapshotError } = await supabase
+    .from('kingdom_player_snapshots')
+    .insert({ kingdom_id: kingdomId })
+    .select('id,kingdom_id,taken_at')
+    .single();
+
+  if (snapshotError) throw snapshotError;
+
+  if (players.length > 0) {
+    const rows = players.map((player) => ({
+      snapshot_id: snapshot.id,
+      player_id: String(player.playerId),
+      nickname: player.nickname || '',
+      alliance_tag: player.allianceTag || '',
+      alliance_name: player.allianceName || ''
+    }));
+    const { error: playersError } = await supabase
+      .from('kingdom_player_snapshot_members')
+      .insert(rows);
+    if (playersError) throw playersError;
+  }
+
+  return { id: snapshot.id, kingdomId: snapshot.kingdom_id, takenAt: snapshot.taken_at };
 }
 
 async function upsertGiftCodes(codes) {
@@ -407,6 +467,7 @@ module.exports = {
   upsertGiftCodePlayer,
   upsertGiftCodePlayers,
   getGiftCodePlayers,
+  getGiftCodePlayersForKingdom,
   getGiftCodePlayer,
   updateGiftCodePlayerNickname,
   deleteGiftCodePlayer,
@@ -416,6 +477,8 @@ module.exports = {
   getWeeklyPowerSnapshot,
   hasWeeklyPowerReport,
   markWeeklyPowerReportSent,
+  getLatestKingdomSnapshot,
+  saveKingdomSnapshot,
   upsertGiftCodes,
   getActiveGiftCodes,
   getGiftCodeRedemption,

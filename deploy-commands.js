@@ -21,6 +21,10 @@ const commands = [
     .setDescription('List all saved events')
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('snapshot')
+    .setDescription('Save and compare gift-code players in kingdom 342')
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('event')
     .setDescription('Show details for a specific event')
     .addStringOption((option) =>
