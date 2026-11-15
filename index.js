@@ -93,7 +93,7 @@ let giftCodeWorkerRunning = false;
 let giftCodeScanRunning = false;
 let allianceSyncRunning = false;
 let weeklyPowerSnapshotRunning = false;
-let mightPulseDailySyncRunning = false;
+let mightPulseDailySyncPromise = null;
 let lastGiftCodeScanMs = 0;
 const giftCodeNotificationBuffer = new Map();
 let giftCodeNotificationTimer = null;
@@ -392,6 +392,12 @@ function getPreviousWeekDate(dateString) {
   return date.toISOString().slice(0, 10);
 }
 
+function getPreviousDayDate(dateString) {
+  const date = new Date(`${dateString}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
 function isPushSaturday(reportDate) {
   const firstPushSaturdayMs = Date.parse('2026-11-07T00:00:00Z');
   const reportMs = Date.parse(`${reportDate}T00:00:00Z`);
@@ -506,7 +512,10 @@ async function sendWeeklyPowerReport(snapshotDate, reportDate, reportKind) {
     getWeeklyPowerSnapshot(snapshotDate),
     getWeeklyPowerSnapshot(previousDate)
   ]);
-  if (currentRows.length === 0 || previousRows.length === 0) return;
+  if (currentRows.length === 0 || previousRows.length === 0) {
+    console.warn(`MightPulse weekly report skipped for ${reportDate}: current snapshot has ${currentRows.length} members; previous snapshot (${previousDate}) has ${previousRows.length}.`);
+    return;
+  }
 
   const channel = await client.channels.fetch(mightPulseWeeklyReportChannelId);
   if (!channel || !channel.isTextBased()) throw new Error('MIGHTPULSE_WEEKLY_REPORT_CHANNEL_ID is not a text channel.');
@@ -522,7 +531,10 @@ async function sendPushWeekLossReport(snapshotDate, reportDate) {
     getWeeklyPowerSnapshot(snapshotDate),
     getWeeklyPowerSnapshot(previousDate)
   ]);
-  if (currentRows.length === 0 || previousRows.length === 0) return;
+  if (currentRows.length === 0 || previousRows.length === 0) {
+    console.warn(`MightPulse push-week loss report skipped for ${reportDate}: current snapshot (${snapshotDate}) has ${currentRows.length} members; previous snapshot (${previousDate}) has ${previousRows.length}.`);
+    return;
+  }
 
   const report = buildPushWeekLossReport(currentRows, previousRows, snapshotDate);
   if (!report) {
@@ -552,20 +564,27 @@ async function captureSaturdayPowerSnapshot(members, syncDate) {
 }
 
 async function runMightPulseDailySyncIfDue() {
-  const now = new Date();
-  const today = getUtcDateParts(now);
-  if (mightPulseDailySyncRunning || !mightPulseApiKey || now.getUTCHours() < 9 || await hasMightPulseDailySync(today.date)) return;
+  if (mightPulseDailySyncPromise) return mightPulseDailySyncPromise;
 
-  mightPulseDailySyncRunning = true;
+  mightPulseDailySyncPromise = (async () => {
+    const now = new Date();
+    const today = getUtcDateParts(now);
+    if (!mightPulseApiKey || now.getUTCHours() < 9 || await hasMightPulseDailySync(today.date)) return;
+
+    try {
+      const members = await syncEggAllianceRoster();
+      await captureSaturdayPowerSnapshot(members, today.date);
+      await markMightPulseDailySyncComplete(today.date);
+      console.log(`MightPulse daily sync completed for ${today.date}.`);
+    } catch (error) {
+      console.error(`MightPulse daily sync will retry later for ${today.date}:`, error);
+    }
+  })();
+
   try {
-    const members = await syncEggAllianceRoster();
-    await captureSaturdayPowerSnapshot(members, today.date);
-    await markMightPulseDailySyncComplete(today.date);
-    console.log(`MightPulse daily sync completed for ${today.date}.`);
-  } catch (error) {
-    console.error(`MightPulse daily sync will retry later for ${today.date}:`, error);
+    return await mightPulseDailySyncPromise;
   } finally {
-    mightPulseDailySyncRunning = false;
+    mightPulseDailySyncPromise = null;
   }
 }
 
@@ -576,9 +595,12 @@ async function runWeeklyReportsIfDue() {
 
   try {
     if (today.weekday === 'Sat') {
+      // A report needs today's snapshot. Await the same daily sync if it is
+      // already in progress, rather than racing it at the scheduled hour.
+      await runMightPulseDailySyncIfDue();
       await sendWeeklyPowerReport(today.date, today.date, isPushSaturday(today.date) ? 'push' : 'normal');
-    } else if (today.weekday === 'Sun' && isPushSaturday(getPreviousWeekDate(today.date))) {
-      await sendPushWeekLossReport(getPreviousWeekDate(today.date), today.date);
+    } else if (today.weekday === 'Sun' && isPushSaturday(getPreviousDayDate(today.date))) {
+      await sendPushWeekLossReport(getPreviousDayDate(today.date), today.date);
     }
   } catch (error) {
     console.error('MightPulse weekly report will retry later:', error);
