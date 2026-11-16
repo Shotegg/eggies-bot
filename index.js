@@ -83,7 +83,7 @@ const mightPulseAllianceKingdomId = Number(process.env.MIGHTPULSE_ALLIANCE_KINGD
 const mightPulseAllianceTag = (process.env.MIGHTPULSE_ALLIANCE_TAG || 'EGG').trim().toUpperCase();
 // Each alliance is fetched with its own single roster request. Keep EGG first so
 // existing weekly-report behavior continues to use it as the primary alliance.
-const mightPulseGiftCodeAllianceTags = [...new Set((process.env.MIGHTPULSE_GIFTCODE_ALLIANCE_TAGS || `${mightPulseAllianceTag},EPC,PEN`)
+const mightPulseGiftCodeAllianceTags = [...new Set((process.env.MIGHTPULSE_GIFTCODE_ALLIANCE_TAGS || `${mightPulseAllianceTag},EPC,PEN,WWF`)
   .split(',')
   .map((tag) => tag.trim().toUpperCase())
   .filter(Boolean))];
