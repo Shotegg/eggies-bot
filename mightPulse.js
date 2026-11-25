@@ -1,5 +1,18 @@
 const API_BASE_URL = 'https://api.mightpulse.com/v1';
 const REQUEST_TIMEOUT_MS = 100000;
+const REQUEST_COOLDOWN_MS = 60 * 1000;
+
+// Reserve request slots so concurrent callers cannot bypass the API cooldown.
+let nextRequestAt = 0;
+
+function waitForRequestSlot() {
+  const now = Date.now();
+  const requestAt = Math.max(now, nextRequestAt);
+  nextRequestAt = requestAt + REQUEST_COOLDOWN_MS;
+
+  if (requestAt === now) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, requestAt - now));
+}
 
 function buildApiError(message, status) {
   const error = new Error(message);
@@ -8,6 +21,8 @@ function buildApiError(message, status) {
 }
 
 async function fetchAllianceRoster(kingdomId, allianceTag, apiKey, maxAgeSeconds = 86400) {
+  await waitForRequestSlot();
+
   const url = new URL(`${API_BASE_URL}/alliances/${encodeURIComponent(String(kingdomId))}/${encodeURIComponent(allianceTag)}`);
   // members_base refreshes every member's base stats in one API request.
   url.searchParams.set('include', 'info,members_base');

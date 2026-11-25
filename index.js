@@ -94,6 +94,7 @@ let giftCodeScanRunning = false;
 let allianceSyncRunning = false;
 let weeklyPowerSnapshotRunning = false;
 let mightPulseDailySyncPromise = null;
+let weeklyReportRunning = false;
 let lastGiftCodeScanMs = 0;
 const giftCodeNotificationBuffer = new Map();
 let giftCodeNotificationTimer = null;
@@ -519,6 +520,7 @@ async function sendWeeklyPowerReport(snapshotDate, reportDate, reportKind) {
 
   const channel = await client.channels.fetch(mightPulseWeeklyReportChannelId);
   if (!channel || !channel.isTextBased()) throw new Error('MIGHTPULSE_WEEKLY_REPORT_CHANNEL_ID is not a text channel.');
+  if (!isWeeklyReportWindow(reportDate)) return;
   await channel.send(buildWeeklyPowerReport(currentRows, previousRows, snapshotDate, reportKind));
   await markWeeklyPowerReportSent(reportDate);
 }
@@ -544,6 +546,7 @@ async function sendPushWeekLossReport(snapshotDate, reportDate) {
 
   const channel = await client.channels.fetch(mightPulseWeeklyReportChannelId);
   if (!channel || !channel.isTextBased()) throw new Error('MIGHTPULSE_WEEKLY_REPORT_CHANNEL_ID is not a text channel.');
+  if (!isWeeklyReportWindow(reportDate)) return;
   await channel.send(report);
   await markWeeklyPowerReportSent(reportDate);
 }
@@ -588,11 +591,16 @@ async function runMightPulseDailySyncIfDue() {
   }
 }
 
+function isWeeklyReportWindow(reportDate, now = new Date()) {
+  return getUtcDateParts(now).date === reportDate && now.getUTCHours() === 11;
+}
+
 async function runWeeklyReportsIfDue() {
   const now = new Date();
   const today = getUtcDateParts(now);
-  if (now.getUTCHours() < 10) return;
+  if (!isWeeklyReportWindow(today.date, now) || weeklyReportRunning) return;
 
+  weeklyReportRunning = true;
   try {
     if (today.weekday === 'Sat') {
       // A report needs today's snapshot. Await the same daily sync if it is
@@ -604,6 +612,8 @@ async function runWeeklyReportsIfDue() {
     }
   } catch (error) {
     console.error('MightPulse weekly report will retry later:', error);
+  } finally {
+    weeklyReportRunning = false;
   }
 }
 
@@ -626,10 +636,12 @@ function scheduleMightPulseTasks() {
   runMightPulseDailySyncIfDue();
   runWeeklyReportsIfDue();
   scheduleDailyUtcTask(9, runMightPulseDailySyncIfDue);
-  scheduleDailyUtcTask(10, runWeeklyReportsIfDue);
+  scheduleDailyUtcTask(11, runWeeklyReportsIfDue);
+  setInterval(() => {
+    runWeeklyReportsIfDue();
+  }, 5 * 60 * 1000);
   setInterval(() => {
     runMightPulseDailySyncIfDue();
-    runWeeklyReportsIfDue();
   }, Math.max(60000, mightPulseRecoveryCheckIntervalMs));
 }
 
