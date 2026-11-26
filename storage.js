@@ -149,6 +149,21 @@ async function deleteRemindersForUser(userId) {
   return (data || []).length;
 }
 
+async function getDiscordMemberSnapshot(guildId) {
+  const { data, error } = await supabase.from('discord_member_snapshots')
+    .select('members,fetched_at').eq('guild_id', guildId).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function saveDiscordMemberSnapshot(guildId, members) {
+  const fetchedAt = new Date().toISOString();
+  const { error } = await supabase.from('discord_member_snapshots')
+    .upsert({ guild_id: guildId, members, fetched_at: fetchedAt }, { onConflict: 'guild_id' });
+  if (error) throw error;
+  return { members, fetched_at: fetchedAt };
+}
+
 async function saveReminders(reminders) {
   const rows = reminders.map(mapReminderToRow);
 
@@ -482,6 +497,8 @@ module.exports = {
   saveEvents,
   getReminders,
   deleteRemindersForUser,
+  getDiscordMemberSnapshot,
+  saveDiscordMemberSnapshot,
   saveReminders,
   upsertGiftCodePlayer,
   upsertGiftCodePlayers,

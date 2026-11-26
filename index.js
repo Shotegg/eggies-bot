@@ -19,6 +19,8 @@ const {
   saveEvents,
   getReminders,
   deleteRemindersForUser,
+  getDiscordMemberSnapshot,
+  saveDiscordMemberSnapshot,
   saveReminders,
   upsertGiftCodePlayer,
   upsertGiftCodePlayers,
@@ -48,6 +50,12 @@ const { REPORT_TEMPLATES, applyTemplate } = require('./weeklyPowerReport');
 
 const token = process.env.DISCORD_TOKEN;
 const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
+const guildId = process.env.GUILD_ID;
+const memberSnapshotMaxAgeMs = 24 * 60 * 60 * 1000;
+const memberSnapshotRetryMs = 5 * 60 * 1000;
+const memberSnapshotCache = new Map();
+const memberSnapshotRequests = new Map();
+const memberSnapshotFailures = new Map();
 const giftCodeNotifyChannelId = process.env.GIFT_CODE_NOTIFY_CHANNEL_ID || '';
 const leaderIds = (process.env.LEADER_IDS || '')
   .split(',')
@@ -113,7 +121,53 @@ client.once(Events.ClientReady, (readyClient) => {
   maybeScanGiftCodesInBackground('startup');
   scheduleGiftCodeAutoScan();
   scheduleMightPulseTasks();
+  if (guildId) scheduleMemberSnapshotRefresh(readyClient, guildId);
 });
+
+async function getCurrentMemberSnapshot(guild) {
+  if (memberSnapshotRequests.has(guild.id)) return memberSnapshotRequests.get(guild.id);
+  const request = (async () => {
+    let snapshot = memberSnapshotCache.get(guild.id);
+    if (!snapshot) {
+      snapshot = await getDiscordMemberSnapshot(guild.id);
+      if (snapshot) memberSnapshotCache.set(guild.id, snapshot);
+    }
+    const fetchedAt = snapshot && Date.parse(snapshot.fetched_at);
+    if (snapshot && Array.isArray(snapshot.members) && Number.isFinite(fetchedAt) && Date.now() - fetchedAt < memberSnapshotMaxAgeMs) return snapshot;
+    if (Date.now() - (memberSnapshotFailures.get(guild.id) || 0) < memberSnapshotRetryMs) {
+      throw new Error('Member list refresh recently failed; please try again in a few minutes.');
+    }
+    try {
+      const members = await guild.members.fetch();
+      const rows = members.map((member) => ({ id: member.id, bot: member.user.bot }));
+      if (rows.length === 0 || (guild.memberCount && rows.length < guild.memberCount)) {
+        throw new Error('Discord returned an incomplete member list.');
+      }
+      snapshot = await saveDiscordMemberSnapshot(guild.id, rows);
+      memberSnapshotCache.set(guild.id, snapshot);
+      memberSnapshotFailures.delete(guild.id);
+      return snapshot;
+    } catch (error) {
+      memberSnapshotFailures.set(guild.id, Date.now());
+      throw error;
+    }
+  })();
+  memberSnapshotRequests.set(guild.id, request);
+  try { return await request; } finally { memberSnapshotRequests.delete(guild.id); }
+}
+
+function scheduleMemberSnapshotRefresh(botClient, targetGuildId) {
+  const refresh = async () => {
+    try {
+      const guild = await botClient.guilds.fetch(targetGuildId);
+      await getCurrentMemberSnapshot(guild);
+    } catch (error) {
+      console.error('Failed to refresh Discord member snapshot:', error);
+    }
+    setTimeout(refresh, memberSnapshotRetryMs);
+  };
+  void refresh();
+}
 
 function toEpochMs(value) {
   const parsed = Date.parse(value);
@@ -1301,10 +1355,20 @@ async function handleChatCommand(interaction) {
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
-      const members = await interaction.guild.members.fetch();
+      const snapshot = await getCurrentMemberSnapshot(interaction.guild);
+      const members = new Set(snapshot.members.map((member) => member.id));
       const reminders = await getReminders();
-      const departedIds = [...new Set(reminders.map((reminder) => reminder.userId))]
+      const missingIds = [...new Set(reminders.map((reminder) => reminder.userId))]
         .filter((userId) => !members.has(userId));
+      const departedIds = [];
+      for (const userId of missingIds) {
+        try {
+          await interaction.guild.members.fetch({ user: userId, force: true });
+        } catch (error) {
+          if (error.code !== 10007) throw error;
+          departedIds.push(userId);
+        }
+      }
       let count = 0;
       for (const userId of departedIds) count += await deleteRemindersForUser(userId);
       await interaction.editReply(`Removed ${count} reminder subscription(s) for ${departedIds.length} user(s) who left the server.`);
@@ -1568,10 +1632,8 @@ async function subscribeAllMembersToEvent(interaction, eventKey) {
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const members = await interaction.guild.members.fetch();
-  const memberIds = members
-    .filter((member) => !member.user.bot)
-    .map((member) => member.user.id);
+  const snapshot = await getCurrentMemberSnapshot(interaction.guild);
+  const memberIds = snapshot.members.filter((member) => !member.bot).map((member) => member.id);
 
   const reminders = await getReminders();
   let added = 0;
@@ -2018,14 +2080,16 @@ function scheduleReminderCycle(botClient, delayMs = reminderMinPollIntervalMs) {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
-    if (interaction.isChatInputCommand()) return handleChatCommand(interaction);
-    if (interaction.isButton()) return handleButton(interaction);
-    if (interaction.isStringSelectMenu()) return handleSelectMenu(interaction);
-    if (interaction.isModalSubmit()) return handleModalSubmit(interaction);
+    if (interaction.isAutocomplete()) return await handleAutocomplete(interaction);
+    if (interaction.isChatInputCommand()) return await handleChatCommand(interaction);
+    if (interaction.isButton()) return await handleButton(interaction);
+    if (interaction.isStringSelectMenu()) return await handleSelectMenu(interaction);
+    if (interaction.isModalSubmit()) return await handleModalSubmit(interaction);
   } catch (error) {
     console.error('Interaction error:', error);
-    if (!interaction.replied && !interaction.deferred) {
+    if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply({ content: 'Something went wrong. Please try again.' }).catch(console.error);
+    } else if (!interaction.replied) {
       await interaction.reply({
         content: `Something went wrong: ${error.message || 'unknown error'}`,
         flags: MessageFlags.Ephemeral

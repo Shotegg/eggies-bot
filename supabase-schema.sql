@@ -21,6 +21,14 @@ create table if not exists public.reminder_subscriptions (
   primary key (user_id, event_key)
 );
 
+create table if not exists public.discord_member_snapshots (
+  guild_id text primary key,
+  members jsonb not null,
+  fetched_at timestamptz not null
+);
+
+grant select, insert, update on table public.discord_member_snapshots to service_role;
+
 create table if not exists public.gift_code_players (
   player_id text primary key,
   nickname text not null default '',
