@@ -13,6 +13,7 @@ const { scheduleMemberSnapshotRefresh } = require('./memberSnapshots');
 const { createInteractions } = require('./interactions');
 const { createMightPulseTasks } = require('./mightPulseTasks');
 const { createGiftCodeWorker } = require('./giftCodeWorker');
+const { getAllianceTags } = require('./allianceTags');
 
 const token = process.env.DISCORD_TOKEN;
 const reminderChannelId = process.env.REMINDER_CHANNEL_ID || '1501304144139653193';
@@ -46,13 +47,10 @@ const giftCodeDebug = process.env.GIFT_CODE_DEBUG === 'true';
 const mightPulseApiKey = (process.env.MIGHTPULSE_API_KEY || '').trim();
 const mightPulseAllianceKingdomId = Number(process.env.MIGHTPULSE_ALLIANCE_KINGDOM_ID || 342);
 // The primary alliance remains the source for weekly reports.
-const mightPulseAllianceTag = (process.env.MIGHTPULSE_ALLIANCE_TAG || 'EGG').trim().toUpperCase();
+const mightPulseAllianceTag = (process.env.MIGHTPULSE_ALLIANCE_TAG || 'EGG').trim();
 // Each alliance is fetched with its own single roster request. Keep EGG first so
 // existing weekly-report behavior continues to use it as the primary alliance.
-const mightPulseGiftCodeAllianceTags = [...new Set((process.env.MIGHTPULSE_GIFTCODE_ALLIANCE_TAGS || `${mightPulseAllianceTag},EPC,PEN,WWF,EPc`)
-  .split(',')
-  .map((tag) => tag.trim().toUpperCase())
-  .filter(Boolean))];
+const mightPulseGiftCodeAllianceTags = getAllianceTags(mightPulseAllianceTag, process.env.MIGHTPULSE_GIFTCODE_ALLIANCE_TAGS);
 const mightPulseWeeklyReportChannelId = (process.env.MIGHTPULSE_WEEKLY_REPORT_CHANNEL_ID || giftCodeNotifyChannelId || '').trim();
 const mightPulseRecoveryCheckIntervalMs = Number(process.env.MIGHTPULSE_RECOVERY_CHECK_INTERVAL_MS || 7200000);
 

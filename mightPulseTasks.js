@@ -1,4 +1,5 @@
 const { fetchAllianceRoster } = require('./mightPulse');
+const { getPrimaryRoster } = require('./allianceTags');
 const { REPORT_TEMPLATES, applyTemplate } = require('./weeklyPowerReport');
 const { getGiftCodePlayers, upsertGiftCodePlayers, saveWeeklyPowerSnapshot, hasMightPulseDailySync, markMightPulseDailySyncComplete, getWeeklyPowerSnapshot, hasWeeklyPowerReport, markWeeklyPowerReportSent } = require('./storage');
 
@@ -47,8 +48,7 @@ async function syncEggAllianceRoster() {
     }
     const players = [...playersById.values()];
     await upsertGiftCodePlayers(players);
-    const eggRoster = rosters.find((roster) => roster.allianceTag.toUpperCase() === mightPulseAllianceTag)
-      || rosters.find((roster) => roster.allianceTag.toUpperCase() === 'EGG');
+    const eggRoster = getPrimaryRoster(mightPulseAllianceTag, mightPulseGiftCodeAllianceTags, rosters);
     console.log(`MightPulse gift-code alliance sync finished: ${players.length} members updated from ${rosters.length} API requests (${mightPulseGiftCodeAllianceTags.join(', ')}).`);
     return eggRoster?.members || [];
   } catch (error) {
