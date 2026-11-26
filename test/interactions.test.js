@@ -9,7 +9,7 @@ const leaderRoleId = '1493344291358118058';
 test('gift-code command uses worker state and settings from the worker module', async () => {
   const handlers = createInteractions({
     leaderRoleId, defaultGiftCodeKingdomId: 342,
-    giftCodeRetryDelayMs: 45000, giftCodeFailedRetryCooldownMs: 21600000,
+    giftCodeRetryDelayMs: 45000, giftCodeFailedRetryCooldownMs: 1800000,
     isGiftCodeWorkerRunning: () => true,
     syncGiftCodes: async () => ({ ok: true, discoveredCodes: [], attempted: [], skipped: 0, pending: 0 })
   });

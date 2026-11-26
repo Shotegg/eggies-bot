@@ -35,7 +35,7 @@ const giftCodeTerminalStatuses = new Set([
   'missing_kingdom_id'
 ]);
 const giftCodeRetryDelayMs = Number(process.env.GIFT_CODE_RETRY_DELAY_MS || 45000);
-const giftCodeFailedRetryCooldownMs = Number(process.env.GIFT_CODE_FAILED_RETRY_COOLDOWN_MS || 21600000);
+const giftCodeFailedRetryCooldownMs = Number(process.env.GIFT_CODE_FAILED_RETRY_COOLDOWN_MS || 1800000);
 const giftCodeAutoScanIntervalMs = Number(process.env.GIFT_CODE_AUTO_SCAN_INTERVAL_MS || 3600000);
 const giftCodeCleanupAfterDays = Number(process.env.GIFT_CODE_CLEANUP_AFTER_DAYS || 14);
 const defaultGiftCodeKingdomId = Number(process.env.GIFT_CODE_DEFAULT_KINGDOM_ID || 342);
