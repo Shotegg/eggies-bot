@@ -149,6 +149,14 @@ async function deleteRemindersForUser(userId) {
   return (data || []).length;
 }
 
+async function markRemindersNotified(eventKey, userIds, occurrenceMs) {
+  if (userIds.length === 0) return;
+  const { error } = await supabase.from('reminder_subscriptions')
+    .update({ last_notified_occurrence_ms: occurrenceMs })
+    .eq('event_key', eventKey).eq('active', true).in('user_id', userIds);
+  if (error) throw error;
+}
+
 async function getDiscordMemberSnapshot(guildId) {
   const { data, error } = await supabase.from('discord_member_snapshots')
     .select('members,fetched_at').eq('guild_id', guildId).maybeSingle();
@@ -497,6 +505,7 @@ module.exports = {
   saveEvents,
   getReminders,
   deleteRemindersForUser,
+  markRemindersNotified,
   getDiscordMemberSnapshot,
   saveDiscordMemberSnapshot,
   saveReminders,

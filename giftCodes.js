@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { requestBody } = require('./httpRequest');
 
 const API_BASE_URL = 'https://kingshot-giftcode.centurygame.com/api';
 const CODE_SOURCE_API_URL = 'https://kingshot.net/api/gift-codes';
@@ -55,7 +56,7 @@ async function postForm(path, params) {
     body.set(key, value == null ? '' : String(value));
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const { response, data } = await requestBody(`${API_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
       accept: 'application/json, text/plain, */*',
@@ -64,9 +65,8 @@ async function postForm(path, params) {
       referer: 'https://ks-giftcode.centurygame.com/'
     },
     body
-  });
+  }, { allowHttpError: true });
 
-  const data = await response.json();
   return { ok: response.ok && data.code === 0, status: response.status, data };
 }
 
@@ -112,12 +112,9 @@ function uniqueCodes(codes) {
 }
 
 async function fetchActiveCodesFromApi() {
-  const response = await fetch(CODE_SOURCE_API_URL, {
+  const { data: json } = await requestBody(CODE_SOURCE_API_URL, {
     headers: { accept: 'application/json' }
-  });
-  if (!response.ok) throw new Error(`Gift code API returned HTTP ${response.status}`);
-
-  const json = await response.json();
+  }, { attempts: 2 });
   const codes = json?.data?.giftCodes || [];
   return codes.map((item) => ({
     code: item.code,
@@ -177,19 +174,17 @@ function parseActiveCodesFromWikiHtml(html) {
 }
 
 async function fetchActiveCodesFromPage() {
-  const response = await fetch(CODE_SOURCE_PAGE_URL, {
+  const { data } = await requestBody(CODE_SOURCE_PAGE_URL, {
     headers: { accept: 'text/html' }
-  });
-  if (!response.ok) throw new Error(`Gift code page returned HTTP ${response.status}`);
-  return parseActiveCodesFromHtml(await response.text());
+  }, { format: 'text', attempts: 2 });
+  return parseActiveCodesFromHtml(data);
 }
 
 async function fetchActiveCodesFromWiki() {
-  const response = await fetch(CODE_SOURCE_WIKI_URL, {
+  const { data } = await requestBody(CODE_SOURCE_WIKI_URL, {
     headers: { accept: 'text/html' }
-  });
-  if (!response.ok) throw new Error(`Gift code wiki page returned HTTP ${response.status}`);
-  return parseActiveCodesFromWikiHtml(await response.text());
+  }, { format: 'text', attempts: 2 });
+  return parseActiveCodesFromWikiHtml(data);
 }
 
 function getExtraGiftCodes() {
@@ -208,8 +203,14 @@ async function fetchActiveGiftCodes() {
   ]);
   const codes = [...getExtraGiftCodes()];
 
-  for (const source of sources) {
+  const names = ['kingshot.net API', 'kingshot.net page', 'kingshotwiki'];
+  for (const [index, source] of sources.entries()) {
     if (source.status === 'fulfilled') codes.push(...source.value);
+    else console.warn(`Gift code source ${names[index]} failed:`, source.reason);
+  }
+
+  if (sources.every((source) => source.status === 'rejected') && codes.length === 0) {
+    throw new Error('All gift code sources failed.');
   }
 
   return uniqueCodes(codes);
