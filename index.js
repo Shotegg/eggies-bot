@@ -18,6 +18,7 @@ const {
   getEventByKey,
   saveEvents,
   getReminders,
+  deleteRemindersForUser,
   saveReminders,
   upsertGiftCodePlayer,
   upsertGiftCodePlayers,
@@ -310,6 +311,7 @@ function buildHelpContent(userId) {
     '`/event name:<event title>` show next time + actions',
     '`/giftcode run [player_id] [code] [kingdom]` sync/redeem active Kingshot gift codes',
     '`/giftcode list` list saved gift code players',
+    isLeader(userId) ? '`/clear` remove reminder subscriptions for users who left the server' : null,
     isLeader(userId) ? 'Role: Leader' : 'Role: Member'
   ].filter(Boolean).join('\n');
 }
@@ -1286,6 +1288,33 @@ async function handleAutocomplete(interaction) {
 }
 
 async function handleChatCommand(interaction) {
+  if (interaction.commandName === 'clear') {
+    if (!isLeader(interaction.user.id)) {
+      await interaction.reply({ content: 'Only leaders can use this command.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (!interaction.inGuild()) {
+      await interaction.reply({ content: 'This command can only be used in the server.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const members = await interaction.guild.members.fetch();
+      const reminders = await getReminders();
+      const departedIds = [...new Set(reminders.map((reminder) => reminder.userId))]
+        .filter((userId) => !members.has(userId));
+      let count = 0;
+      for (const userId of departedIds) count += await deleteRemindersForUser(userId);
+      await interaction.editReply(`Removed ${count} reminder subscription(s) for ${departedIds.length} user(s) who left the server.`);
+    } catch (error) {
+      console.error('Failed to clear reminder subscriptions:', error);
+      await interaction.editReply('Could not complete the cleanup. Some subscriptions may already have been removed; please try again.');
+    }
+    return;
+  }
+
   if (interaction.commandName === 'help') {
     await interaction.reply(buildHelpResponse(interaction.user.id));
     return;

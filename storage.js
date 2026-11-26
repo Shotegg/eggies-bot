@@ -123,12 +123,30 @@ async function saveEvents(events) {
 }
 
 async function getReminders() {
+  const rows = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from('reminder_subscriptions')
+      .select('user_id,channel_id,event_key,active,last_notified_occurrence_ms')
+      .order('user_id')
+      .order('event_key')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return rows.map(mapReminderRow);
+}
+
+async function deleteRemindersForUser(userId) {
   const { data, error } = await supabase
     .from('reminder_subscriptions')
-    .select('user_id,channel_id,event_key,active,last_notified_occurrence_ms');
-
+    .delete()
+    .eq('user_id', userId)
+    .select('event_key');
   if (error) throw error;
-  return (data || []).map(mapReminderRow);
+  return (data || []).length;
 }
 
 async function saveReminders(reminders) {
@@ -463,6 +481,7 @@ module.exports = {
   getEventByKey,
   saveEvents,
   getReminders,
+  deleteRemindersForUser,
   saveReminders,
   upsertGiftCodePlayer,
   upsertGiftCodePlayers,

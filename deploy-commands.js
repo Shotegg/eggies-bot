@@ -21,6 +21,10 @@ const commands = [
     .setDescription('List all saved events')
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('clear')
+    .setDescription('Remove reminder subscriptions for users who left the server (leaders only)')
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('snapshot')
     .setDescription('Save and compare gift-code players in kingdom 342')
     .toJSON(),
