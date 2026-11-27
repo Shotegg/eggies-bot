@@ -442,6 +442,33 @@ async function isGiftCodeActive(code) {
   return data?.active === true;
 }
 
+async function deleteRedemptionsForCodes(codes) {
+  for (let start = 0; start < codes.length; start += 100) {
+    const { error } = await supabase.from('gift_code_redemptions')
+      .delete().in('code', codes.slice(start, start + 100));
+    if (error) throw error;
+  }
+}
+
+async function cleanupInactiveGiftCodeRedemptions() {
+  const { error: expireError } = await supabase.from('gift_codes')
+    .update({ active: false }).eq('active', true)
+    .not('expires_at', 'is', null).lte('expires_at', new Date().toISOString());
+  if (expireError) throw expireError;
+
+  const pageSize = 1000;
+  const codes = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase.from('gift_codes')
+      .select('code').eq('active', false).order('code').range(from, from + pageSize - 1);
+    if (error) throw error;
+    codes.push(...(data || []).map((row) => row.code));
+    if (!data || data.length < pageSize) break;
+  }
+  await deleteRedemptionsForCodes(codes);
+  return codes.length;
+}
+
 async function getActiveGiftCodes() {
   const { data, error } = await supabase
     .from('gift_codes')
@@ -547,6 +574,8 @@ module.exports = {
   upsertGiftCodes,
   deactivateGiftCode,
   isGiftCodeActive,
+  deleteRedemptionsForCodes,
+  cleanupInactiveGiftCodeRedemptions,
   getActiveGiftCodes,
   getGiftCodeRedemption,
   getGiftCodeRedemptionsForCodes,

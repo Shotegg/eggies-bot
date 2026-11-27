@@ -6,6 +6,7 @@ const actions = [];
 require.cache[storagePath] = { id: storagePath, filename: storagePath, loaded: true, exports: {
   getGiftCodeRedemption: async () => null,
   deactivateGiftCode: async (code) => actions.push(['deactivate', code]),
+  deleteRedemptionsForCodes: async (codes) => actions.push(['deleteRedemptions', codes]),
   saveGiftCodeRedemption: async (record) => actions.push(['record', record])
 } };
 require.cache[giftCodesPath] = { id: giftCodesPath, filename: giftCodesPath, loaded: true, exports: {
@@ -13,10 +14,9 @@ require.cache[giftCodesPath] = { id: giftCodesPath, filename: giftCodesPath, loa
 } };
 const { createGiftCodeWorker } = require('../giftCodeWorker');
 
-test('40007 disables the code and records the redemption as expired', async () => {
+test('40007 disables the code and deletes its redemptions', async () => {
   const worker = createGiftCodeWorker({ giftCodeTerminalStatuses: new Set(['expired']) });
   await worker.redeemCodeForPlayer({ playerId: '1', kid: 342 }, 'SAYHIHI');
   assert.deepEqual(actions[0], ['deactivate', 'SAYHIHI']);
-  assert.equal(actions[1][1].status, 'expired');
-  assert.equal(actions[1][1].errCode, '40007');
+  assert.deepEqual(actions[1], ['deleteRedemptions', ['SAYHIHI']]);
 });

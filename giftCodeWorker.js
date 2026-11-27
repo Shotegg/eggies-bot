@@ -1,6 +1,6 @@
 const { fetchActiveGiftCodes, redeemGiftCode } = require('./giftCodes');
 const { redeemWithRateLimitRetry } = require('./giftCodeRateLimit');
-const { getGiftCodePlayer, upsertGiftCodePlayer, getGiftCodePlayers, getGiftCodeRedemption, getGiftCodeRedemptionsForCodes, saveGiftCodeRedemption, getActiveGiftCodes, upsertGiftCodes, deleteOldGiftCodes, deactivateGiftCode } = require('./storage');
+const { getGiftCodePlayer, upsertGiftCodePlayer, getGiftCodePlayers, getGiftCodeRedemption, getGiftCodeRedemptionsForCodes, saveGiftCodeRedemption, getActiveGiftCodes, upsertGiftCodes, deleteOldGiftCodes, deactivateGiftCode, deleteRedemptionsForCodes, cleanupInactiveGiftCodeRedemptions } = require('./storage');
 
 function createGiftCodeWorker({ client, giftCodeTerminalStatuses, giftCodeRetryDelayMs, giftCodeFailedRetryCooldownMs, giftCodeAutoScanIntervalMs, giftCodeCleanupAfterDays, defaultGiftCodeKingdomId, giftCodeDebug, giftCodeNotifyChannelId }) {
 function logGiftCodeDebug(message, details = {}) {
@@ -145,11 +145,16 @@ async function redeemCodeForPlayer(player, code) {
     errCode: raw.err_code || null
   });
 
-  if (!result.ok && String(raw.err_code) === '40007') {
+  const expiredCode = !result.ok && String(raw.err_code) === '40007';
+  if (expiredCode) {
     await deactivateGiftCode(code);
     console.log(`[giftcode] Disabled expired code ${code} (40007).`);
   }
-  await recordGiftCodeResult(playerInfo.playerId, code, result, rateLimitExhausted ? 'failed' : null);
+  if (expiredCode) {
+    await deleteRedemptionsForCodes([code]);
+  } else {
+    await recordGiftCodeResult(playerInfo.playerId, code, result, rateLimitExhausted ? 'failed' : null);
+  }
   return {
     ...result,
     rateLimitExhausted,
@@ -265,6 +270,7 @@ async function runGiftCodeWorker() {
       const expiredCodes = new Set(redemptions.filter((row) => String(row.err_code) === '40007').map((row) => row.code));
       for (const code of expiredCodes) await deactivateGiftCode(code);
       if (expiredCodes.size > 0) {
+        await deleteRedemptionsForCodes([...expiredCodes]);
         codes = codes.filter((code) => !expiredCodes.has(code.code));
         console.log(`[giftcode] Disabled ${expiredCodes.size} code(s) from earlier 40007 responses.`);
       }
@@ -428,8 +434,21 @@ function scheduleGiftCodeAutoScan(delayMs = giftCodeAutoScanIntervalMs) {
   }, Math.max(60000, delayMs));
 }
 
+function scheduleGiftCodeRedemptionCleanup() {
+  const run = async () => {
+    try {
+      const count = await cleanupInactiveGiftCodeRedemptions();
+      logGiftCodeDebug('cleaned redemptions for inactive codes', { codes: count });
+    } catch (error) {
+      console.error('Gift code redemption cleanup failed:', error);
+    }
+  };
+  void run();
+  setInterval(() => { void run(); }, 60 * 60 * 1000);
+}
 
-return { saveGiftCodePlayerKingdom, redeemCodeForPlayer, syncGiftCodes, startGiftCodeWorker, maybeScanGiftCodesInBackground, scheduleGiftCodeAutoScan, isGiftCodeWorkerRunning: () => giftCodeWorkerRunning };
+
+return { saveGiftCodePlayerKingdom, redeemCodeForPlayer, syncGiftCodes, startGiftCodeWorker, maybeScanGiftCodesInBackground, scheduleGiftCodeAutoScan, scheduleGiftCodeRedemptionCleanup, isGiftCodeWorkerRunning: () => giftCodeWorkerRunning };
 }
 
 module.exports = { createGiftCodeWorker };

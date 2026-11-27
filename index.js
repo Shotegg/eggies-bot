@@ -61,7 +61,7 @@ if (!token) {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 const { scheduleMightPulseTasks, formatPower } = createMightPulseTasks({ client, mightPulseApiKey, mightPulseAllianceKingdomId, mightPulseAllianceTag, mightPulseGiftCodeAllianceTags, mightPulseWeeklyReportChannelId, mightPulseRecoveryCheckIntervalMs });
-const { saveGiftCodePlayerKingdom, redeemCodeForPlayer, syncGiftCodes, startGiftCodeWorker, maybeScanGiftCodesInBackground, scheduleGiftCodeAutoScan, isGiftCodeWorkerRunning } = createGiftCodeWorker({ client, giftCodeTerminalStatuses, giftCodeRetryDelayMs, giftCodeFailedRetryCooldownMs, giftCodeAutoScanIntervalMs, giftCodeCleanupAfterDays, defaultGiftCodeKingdomId, giftCodeDebug, giftCodeNotifyChannelId });
+const { saveGiftCodePlayerKingdom, redeemCodeForPlayer, syncGiftCodes, startGiftCodeWorker, maybeScanGiftCodesInBackground, scheduleGiftCodeAutoScan, scheduleGiftCodeRedemptionCleanup, isGiftCodeWorkerRunning } = createGiftCodeWorker({ client, giftCodeTerminalStatuses, giftCodeRetryDelayMs, giftCodeFailedRetryCooldownMs, giftCodeAutoScanIntervalMs, giftCodeCleanupAfterDays, defaultGiftCodeKingdomId, giftCodeDebug, giftCodeNotifyChannelId });
 const { buildReminderActionRow, handleAutocomplete, handleChatCommand, handleButton, handleSelectMenu, handleModalSubmit } = createInteractions({ leaderRoleId, snapshotUserId, snapshotKingdomId, reminderChannelId, defaultGiftCodeKingdomId, toEpochMs, formatPower, saveGiftCodePlayerKingdom, redeemCodeForPlayer, syncGiftCodes, startGiftCodeWorker, maybeScanGiftCodesInBackground, isGiftCodeWorkerRunning, giftCodeRetryDelayMs, giftCodeFailedRetryCooldownMs });
 startKeepAlive();
 
@@ -69,6 +69,7 @@ client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   maybeScanGiftCodesInBackground('startup');
   scheduleGiftCodeAutoScan();
+  scheduleGiftCodeRedemptionCleanup();
   scheduleMightPulseTasks();
   if (guildId) scheduleMemberSnapshotRefresh(readyClient, guildId);
 });
