@@ -345,6 +345,7 @@ async function syncGiftCodes(playerId, kingdomId = defaultGiftCodeKingdomId) {
   });
   await upsertGiftCodes(discoveredCodes);
   await cleanupOldGiftCodes();
+  const activeCodes = await getActiveGiftCodes();
 
   const players = await getGiftCodePlayers();
   if (players.length === 0) {
@@ -353,7 +354,7 @@ async function syncGiftCodes(playerId, kingdomId = defaultGiftCodeKingdomId) {
       message: 'No saved players yet. Run /giftcode with player_id first.',
       playerId,
       player: null,
-      discoveredCodes,
+      discoveredCodes: activeCodes,
       attempted: [],
       skipped: [],
       pending: 0
@@ -361,9 +362,9 @@ async function syncGiftCodes(playerId, kingdomId = defaultGiftCodeKingdomId) {
   }
 
   const attempted = [];
-  const redemptions = await getGiftCodeRedemptionsForCodes(discoveredCodes.map((code) => code.code));
+  const redemptions = await getGiftCodeRedemptionsForCodes(activeCodes.map((code) => code.code));
   const redemptionIndex = buildRedemptionIndex(redemptions);
-  const { pending, skipped } = countPendingGiftCodeAttempts(players, discoveredCodes, redemptionIndex);
+  const { pending, skipped } = countPendingGiftCodeAttempts(players, activeCodes, redemptionIndex);
 
   startGiftCodeWorker();
   logGiftCodeDebug('sync queued worker', {
@@ -377,7 +378,7 @@ async function syncGiftCodes(playerId, kingdomId = defaultGiftCodeKingdomId) {
     ok: true,
     playerId: registered?.info?.playerId || null,
     player: registered?.info || null,
-    discoveredCodes,
+    discoveredCodes: activeCodes,
     attempted,
     skipped,
     pending
