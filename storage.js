@@ -420,9 +420,26 @@ async function upsertGiftCodes(codes) {
 
   const { error } = await supabase
     .from('gift_codes')
-    .upsert(rows, { onConflict: 'code' });
+    .upsert(rows, { onConflict: 'code', ignoreDuplicates: true });
 
   if (error) throw error;
+  for (const row of rows) {
+    const { error: updateError } = await supabase.from('gift_codes')
+      .update({ source: row.source, expires_at: row.expires_at, last_seen_at: row.last_seen_at })
+      .eq('code', row.code);
+    if (updateError) throw updateError;
+  }
+}
+
+async function deactivateGiftCode(code) {
+  const { error } = await supabase.from('gift_codes').update({ active: false }).eq('code', code);
+  if (error) throw error;
+}
+
+async function isGiftCodeActive(code) {
+  const { data, error } = await supabase.from('gift_codes').select('active').eq('code', code).maybeSingle();
+  if (error) throw error;
+  return data?.active === true;
 }
 
 async function getActiveGiftCodes() {
@@ -474,6 +491,7 @@ async function deleteOldGiftCodes(cutoffIso) {
   const expired = await supabase
     .from('gift_codes')
     .delete()
+    .eq('active', true)
     .not('expires_at', 'is', null)
     .lt('expires_at', cutoffIso);
   if (expired.error) throw expired.error;
@@ -481,6 +499,7 @@ async function deleteOldGiftCodes(cutoffIso) {
   const stale = await supabase
     .from('gift_codes')
     .delete()
+    .eq('active', true)
     .lt('last_seen_at', cutoffIso);
   if (stale.error) throw stale.error;
 }
@@ -526,6 +545,8 @@ module.exports = {
   getLatestKingdomSnapshot,
   saveKingdomSnapshot,
   upsertGiftCodes,
+  deactivateGiftCode,
+  isGiftCodeActive,
   getActiveGiftCodes,
   getGiftCodeRedemption,
   getGiftCodeRedemptionsForCodes,

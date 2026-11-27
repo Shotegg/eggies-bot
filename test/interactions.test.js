@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const storagePath = require.resolve('../storage');
 const savedCodes = [];
-require.cache[storagePath] = { id: storagePath, filename: storagePath, loaded: true, exports: { upsertGiftCodes: async (codes) => savedCodes.push(...codes) } };
+require.cache[storagePath] = { id: storagePath, filename: storagePath, loaded: true, exports: { upsertGiftCodes: async (codes) => savedCodes.push(...codes), isGiftCodeActive: async () => true } };
 const { createInteractions } = require('../interactions');
 const leaderRoleId = '1493344291358118058';
 

@@ -6,23 +6,19 @@ const rateLimited = { ok: false, redeem: { status: 200, data: { err_code: 40013 
 const success = { ok: true, redeem: { status: 200, data: { code: 0 } } };
 const quiet = { warn() {} };
 
-test('previously misclassified TIME ERROR records become retryable', () => {
+test('previously misclassified 40007 records are treated as expired', () => {
   const old = { status: 'town_center_too_low', err_code: '40007', message: 'TIME ERROR.' };
-  assert.equal(normalizeGiftCodeRedemption(old).status, 'failed');
-  assert.equal(normalizeGiftCodeRedemption({ ...old, message: 'Town Center level is not high enough.' }).status, 'town_center_too_low');
+  assert.equal(normalizeGiftCodeRedemption(old).status, 'expired');
+  assert.equal(normalizeGiftCodeRedemption({ ...old, err_code: '40008' }).status, 'town_center_too_low');
 });
 
-test('TIME ERROR 40007 retries, but a town center error with the same code does not', async () => {
+test('40007 is returned immediately without retry', async () => {
   const options = { wait: async () => {}, logger: quiet };
   let calls = 0;
   const timeError = { ok: false, message: 'TIME ERROR.', redeem: { status: 200, data: { err_code: 40007 } } };
   const result = await redeemWithRateLimitRetry(async () => ++calls === 1 ? timeError : success, 'p', 'c', 342, options);
-  assert.equal(calls, 2);
-  assert.equal(result.result, success);
-  calls = 0;
-  const townError = { ok: false, message: 'Town Center level is not high enough.', redeem: { status: 200, data: { err_code: 40007 } } };
-  await redeemWithRateLimitRetry(async () => { calls++; return townError; }, 'p', 'c', 342, options);
   assert.equal(calls, 1);
+  assert.equal(result.result, timeError);
 });
 
 test('retries the same player and code after five seconds and returns success', async () => {

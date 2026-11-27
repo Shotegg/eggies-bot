@@ -1,5 +1,5 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder } = require('discord.js');
-const { getEvents, getEventByKey, saveEvents, getReminders, deleteRemindersForUser, saveReminders, getGiftCodePlayers, getGiftCodePlayersForKingdom, getGiftCodePlayer, deleteGiftCodePlayer, getLatestKingdomSnapshot, saveKingdomSnapshot, upsertGiftCodes } = require('./storage');
+const { getEvents, getEventByKey, saveEvents, getReminders, deleteRemindersForUser, saveReminders, getGiftCodePlayers, getGiftCodePlayersForKingdom, getGiftCodePlayer, deleteGiftCodePlayer, getLatestKingdomSnapshot, saveKingdomSnapshot, upsertGiftCodes, isGiftCodeActive } = require('./storage');
 const { getCurrentMemberSnapshot } = require('./memberSnapshots');
 
 function createInteractions({ leaderRoleId, snapshotUserId, snapshotKingdomId, reminderChannelId, defaultGiftCodeKingdomId, toEpochMs, formatPower, saveGiftCodePlayerKingdom, redeemCodeForPlayer, syncGiftCodes, startGiftCodeWorker, maybeScanGiftCodesInBackground, isGiftCodeWorkerRunning, giftCodeRetryDelayMs, giftCodeFailedRetryCooldownMs }) {
@@ -441,14 +441,17 @@ async function handleChatCommand(interaction) {
         return;
       }
 
+      await upsertGiftCodes([{ code, source: 'manual-command', expiresAt: null, active: true }]);
+      if (!await isGiftCodeActive(code)) {
+        await interaction.editReply(`Code ${code} is inactive because it was marked expired.`);
+        return;
+      }
       if (!playerId) {
-        await upsertGiftCodes([{ code, source: 'manual-command', expiresAt: null, active: true }]);
         startGiftCodeWorker();
         await interaction.editReply(`Saved code ${code} and started background redeem for saved players.`);
         return;
       }
 
-      await upsertGiftCodes([{ code, source: 'manual-command', expiresAt: null, active: true }]);
       const player = await saveGiftCodePlayerKingdom(playerId, kingdom);
 
       const result = await redeemCodeForPlayer(player, code);

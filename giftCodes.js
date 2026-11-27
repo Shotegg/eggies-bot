@@ -14,7 +14,7 @@ const ERROR_MESSAGES = {
   40004: 'Your Town Center level is not enough, unable to claim.',
   40005: 'Redeemed, please claim the rewards in your mail!',
   40006: 'Gift Code not found, this is case-sensitive!',
-  40007: 'Town Center level is not high enough.',
+  40007: 'Gift code expired.',
   40008: 'Gift has already been claimed.',
   40009: 'Please log in to the relevant character before redemption.',
   40010: 'Server busy, the rewards will be sent afterwards, please wait.',

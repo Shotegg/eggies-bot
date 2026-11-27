@@ -1,6 +1,6 @@
 const { fetchActiveGiftCodes, redeemGiftCode } = require('./giftCodes');
 const { redeemWithRateLimitRetry } = require('./giftCodeRateLimit');
-const { getGiftCodePlayer, upsertGiftCodePlayer, getGiftCodePlayers, getGiftCodeRedemption, getGiftCodeRedemptionsForCodes, saveGiftCodeRedemption, getActiveGiftCodes, upsertGiftCodes, deleteOldGiftCodes } = require('./storage');
+const { getGiftCodePlayer, upsertGiftCodePlayer, getGiftCodePlayers, getGiftCodeRedemption, getGiftCodeRedemptionsForCodes, saveGiftCodeRedemption, getActiveGiftCodes, upsertGiftCodes, deleteOldGiftCodes, deactivateGiftCode } = require('./storage');
 
 function createGiftCodeWorker({ client, giftCodeTerminalStatuses, giftCodeRetryDelayMs, giftCodeFailedRetryCooldownMs, giftCodeAutoScanIntervalMs, giftCodeCleanupAfterDays, defaultGiftCodeKingdomId, giftCodeDebug, giftCodeNotifyChannelId }) {
 function logGiftCodeDebug(message, details = {}) {
@@ -50,7 +50,7 @@ function classifyGiftCodeFailure(errCode, message) {
   if (['40001', '40002', '40008'].includes(errCode) || normalized.includes('already claimed') || normalized.includes('already redeemed') || normalized.includes('received')) {
     return 'already_redeemed';
   }
-  if (['40003', '40015'].includes(errCode) || normalized.includes('expired')) {
+  if (['40003', '40007', '40015'].includes(errCode) || normalized.includes('expired')) {
     return 'expired';
   }
   if (errCode === '40004' || normalized.includes('claim limit') || normalized.includes('redemption limit')) {
@@ -62,7 +62,7 @@ function classifyGiftCodeFailure(errCode, message) {
   if (errCode === '40006' || normalized.includes('gift code not found') || normalized.includes('case-sensitive')) {
     return 'invalid_code';
   }
-  if (errCode === '40007' || normalized.includes('town center')) {
+  if (normalized.includes('town center')) {
     return 'town_center_too_low';
   }
   if (errCode === '40011' || normalized.includes('redemption requirements')) {
@@ -145,6 +145,10 @@ async function redeemCodeForPlayer(player, code) {
     errCode: raw.err_code || null
   });
 
+  if (!result.ok && String(raw.err_code) === '40007') {
+    await deactivateGiftCode(code);
+    console.log(`[giftcode] Disabled expired code ${code} (40007).`);
+  }
   await recordGiftCodeResult(playerInfo.playerId, code, result, rateLimitExhausted ? 'failed' : null);
   return {
     ...result,
@@ -256,8 +260,14 @@ async function runGiftCodeWorker() {
   try {
     while (true) {
       const players = await getGiftCodePlayers();
-      const codes = await getActiveGiftCodes();
+      let codes = await getActiveGiftCodes();
       const redemptions = await getGiftCodeRedemptionsForCodes(codes.map((code) => code.code));
+      const expiredCodes = new Set(redemptions.filter((row) => String(row.err_code) === '40007').map((row) => row.code));
+      for (const code of expiredCodes) await deactivateGiftCode(code);
+      if (expiredCodes.size > 0) {
+        codes = codes.filter((code) => !expiredCodes.has(code.code));
+        console.log(`[giftcode] Disabled ${expiredCodes.size} code(s) from earlier 40007 responses.`);
+      }
       const redemptionIndex = buildRedemptionIndex(redemptions);
       logGiftCodeDebug('worker loaded queue', {
         players: players.length,
