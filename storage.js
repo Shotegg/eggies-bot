@@ -1,4 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
+const { normalizeGiftCodeRedemption } = require('./giftCodeRateLimit');
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -438,13 +439,13 @@ async function getActiveGiftCodes() {
 async function getGiftCodeRedemption(playerId, code) {
   const { data, error } = await supabase
     .from('gift_code_redemptions')
-    .select('player_id,code,status,last_attempt_at')
+    .select('player_id,code,status,last_attempt_at,err_code,message')
     .eq('player_id', String(playerId))
     .eq('code', code)
     .maybeSingle();
 
   if (error) throw error;
-  return data || null;
+  return data ? normalizeGiftCodeRedemption(data) : null;
 }
 
 async function getGiftCodeRedemptionsForCodes(codes) {
@@ -457,12 +458,12 @@ async function getGiftCodeRedemptionsForCodes(codes) {
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await supabase
       .from('gift_code_redemptions')
-      .select('player_id,code,status,last_attempt_at')
+      .select('player_id,code,status,last_attempt_at,err_code,message')
       .in('code', codeList)
       .range(from, from + pageSize - 1);
 
     if (error) throw error;
-    rows.push(...(data || []));
+    rows.push(...(data || []).map(normalizeGiftCodeRedemption));
     if (!data || data.length < pageSize) break;
   }
 

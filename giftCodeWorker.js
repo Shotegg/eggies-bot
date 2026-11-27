@@ -1,4 +1,5 @@
 const { fetchActiveGiftCodes, redeemGiftCode } = require('./giftCodes');
+const { redeemWithRateLimitRetry } = require('./giftCodeRateLimit');
 const { getGiftCodePlayer, upsertGiftCodePlayer, getGiftCodePlayers, getGiftCodeRedemption, getGiftCodeRedemptionsForCodes, saveGiftCodeRedemption, getActiveGiftCodes, upsertGiftCodes, deleteOldGiftCodes } = require('./storage');
 
 function createGiftCodeWorker({ client, giftCodeTerminalStatuses, giftCodeRetryDelayMs, giftCodeFailedRetryCooldownMs, giftCodeAutoScanIntervalMs, giftCodeCleanupAfterDays, defaultGiftCodeKingdomId, giftCodeDebug, giftCodeNotifyChannelId }) {
@@ -132,7 +133,7 @@ async function redeemCodeForPlayer(player, code) {
     };
   }
 
-  const result = await redeemGiftCode(playerId, code, playerInfo.kid);
+  const { result, rateLimitExhausted } = await redeemWithRateLimitRetry(redeemGiftCode, playerId, code, playerInfo.kid);
   const raw = result.redeem?.data || result.player?.data || {};
   logGiftCodeDebug('redeem result', {
     playerId: String(playerId),
@@ -144,9 +145,10 @@ async function redeemCodeForPlayer(player, code) {
     errCode: raw.err_code || null
   });
 
-  await recordGiftCodeResult(playerInfo.playerId, code, result);
+  await recordGiftCodeResult(playerInfo.playerId, code, result, rateLimitExhausted ? 'failed' : null);
   return {
     ...result,
+    rateLimitExhausted,
     playerInfo,
     previousStatus: existing?.status || null,
     newSuccessfulRedemption: result.ok && existing?.status !== 'success'
@@ -279,6 +281,7 @@ async function runGiftCodeWorker() {
       if (result.newSuccessfulRedemption) {
         queueGiftCodeNotification(next.code.code, result.playerInfo);
       }
+      if (result.rateLimitExhausted) break;
       logGiftCodeDebug('worker sleeping after attempt', {
         delayMs: giftCodeRetryDelayMs
       });
