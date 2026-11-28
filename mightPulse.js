@@ -64,4 +64,29 @@ async function fetchAllianceRoster(kingdomId, allianceTag, apiKey, maxAgeSeconds
   }
 }
 
-module.exports = { fetchAllianceRoster };
+async function fetchMigrantScores(ids, apiKey) {
+  const scores = new Map();
+  for (let i = 0; i < ids.length; i += 50) {
+    await waitForRequestSlot();
+    const url = new URL(`${API_BASE_URL}/players`);
+    url.searchParams.set('ids', ids.slice(i, i + 50).join(','));
+    url.searchParams.set('include', 'ranks');
+    url.searchParams.set('max_age', '86400');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { headers: { accept: 'application/json', authorization: `Bearer ${apiKey}` }, signal: controller.signal });
+      if (!response.ok) throw buildApiError(`MightPulse player request returned HTTP ${response.status}`, response.status);
+      const data = await response.json();
+      if (!Array.isArray(data.players)) throw new Error('MightPulse player response did not include players.');
+      for (const player of data.players) {
+        const value = player.ranks?.migrant_score;
+        const id = player.governor_id ?? player.player?.governor_id;
+        if (id != null && value != null && value !== '' && Number.isFinite(Number(value))) scores.set(String(id), Number(value));
+      }
+    } finally { clearTimeout(timeout); }
+  }
+  return scores;
+}
+
+module.exports = { fetchAllianceRoster, fetchMigrantScores };

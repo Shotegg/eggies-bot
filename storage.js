@@ -253,6 +253,14 @@ async function getGiftCodePlayers() {
   return (data || []).map(mapGiftCodePlayerRow);
 }
 
+async function getEggPlayers() {
+  const { data, error } = await supabase.from('gift_code_players')
+    .select('player_id,nickname,kid,stove_lv,power,alliance_tag,alliance_name,active')
+    .ilike('alliance_tag', 'EGG').order('player_id', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(mapGiftCodePlayerRow);
+}
+
 async function getGiftCodePlayersForKingdom(kingdomId) {
   const { data, error } = await supabase
     .from('gift_code_players')
@@ -559,6 +567,7 @@ module.exports = {
   upsertGiftCodePlayer,
   upsertGiftCodePlayers,
   getGiftCodePlayers,
+  getEggPlayers,
   getGiftCodePlayersForKingdom,
   getGiftCodePlayer,
   updateGiftCodePlayerNickname,

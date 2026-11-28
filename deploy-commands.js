@@ -12,6 +12,7 @@ if (!token || !clientId || !guildId) {
 }
 
 const commands = [
+  new SlashCommandBuilder().setName('trialliance').setDescription('Create a Trial of Alliance plan (leaders only)').toJSON(),
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show how to use the bot')

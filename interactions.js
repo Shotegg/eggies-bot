@@ -1,6 +1,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder } = require('discord.js');
 const { getEvents, getEventByKey, saveEvents, getReminders, deleteRemindersForUser, saveReminders, getGiftCodePlayers, getGiftCodePlayersForKingdom, getGiftCodePlayer, deleteGiftCodePlayer, getLatestKingdomSnapshot, saveKingdomSnapshot, upsertGiftCodes, isGiftCodeActive } = require('./storage');
 const { getCurrentMemberSnapshot } = require('./memberSnapshots');
+const { createTrialPlanner } = require('./trialPlanner');
 
 function createInteractions({ leaderRoleId, snapshotUserId, snapshotKingdomId, reminderChannelId, defaultGiftCodeKingdomId, toEpochMs, formatPower, saveGiftCodePlayerKingdom, redeemCodeForPlayer, syncGiftCodes, startGiftCodeWorker, maybeScanGiftCodesInBackground, isGiftCodeWorkerRunning, giftCodeRetryDelayMs, giftCodeFailedRetryCooldownMs }) {
 const debugMemberUserIds = new Set();
@@ -86,6 +87,7 @@ function hasLeaderRole(interaction) {
 function isLeader(interaction) {
   return hasLeaderRole(interaction) && !debugMemberUserIds.has(interaction.user.id);
 }
+const trialPlanner = createTrialPlanner(isLeader, process.env.MIGHTPULSE_API_KEY?.trim());
 
 function buildHelpContent(interaction) {
   return [
@@ -96,6 +98,7 @@ function buildHelpContent(interaction) {
     '`/giftcode run [player_id] [code] [kingdom]` sync/redeem active Kingshot gift codes',
     '`/giftcode list` list saved gift code players',
     isLeader(interaction) ? '`/clear` remove reminder subscriptions for users who left the server' : null,
+    isLeader(interaction) ? '`/trialliance` create a Trial of Alliance plan' : null,
     isLeader(interaction) ? 'Role: Leader' : 'Role: Member'
   ].filter(Boolean).join('\n');
 }
@@ -342,6 +345,7 @@ async function handleAutocomplete(interaction) {
 }
 
 async function handleChatCommand(interaction) {
+  if (interaction.commandName === 'trialliance') return trialPlanner.command(interaction);
   if (interaction.commandName === 'clear') {
     if (!isLeader(interaction)) {
       await interaction.reply({ content: 'Only leaders can use this command.', flags: MessageFlags.Ephemeral });
@@ -580,6 +584,7 @@ async function handleLeaderButton(interaction, action) {
 }
 
 async function handleSelectMenu(interaction) {
+  if (interaction.customId.startsWith('trial:select:')) return trialPlanner.select(interaction);
   if (interaction.customId.startsWith('giftplayer:select')) {
     if (!isLeader(interaction)) {
       await interaction.reply({ content: 'Only leaders can remove gift code players.', flags: MessageFlags.Ephemeral });
@@ -673,6 +678,7 @@ async function subscribeAllMembersToEvent(interaction, eventKey) {
 }
 
 async function handleButton(interaction) {
+  if (interaction.customId.startsWith('trial:')) return trialPlanner.button(interaction);
   const [action, eventKey] = interaction.customId.split(':');
 
   if (action === 'giftplayer') {
@@ -941,6 +947,7 @@ async function handleEditNextAtModal(interaction) {
 }
 
 async function handleModalSubmit(interaction) {
+  if (interaction.customId.startsWith('trial:submit:')) return trialPlanner.submit(interaction);
   if (interaction.customId === 'giftplayer:searchmodal') {
     if (!isLeader(interaction)) {
       await interaction.reply({ content: 'Only leaders can remove gift code players.', flags: MessageFlags.Ephemeral });
