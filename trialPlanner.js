@@ -1,7 +1,8 @@
 ﻿const { randomUUID } = require('crypto');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
-const { getEggPlayers } = require('./storage');
+const { getEggPlayers, getMigrantScoreCache, saveMigrantScoreCache } = require('./storage');
 const { fetchMigrantScores } = require('./mightPulse');
+const { resolveMigrantScores } = require('./migrantScoreCache');
 
 function assignLanes(players) {
   const lanes = { middle: [], hard: [], easy: [] };
@@ -65,7 +66,6 @@ function createTrialPlanner(isLeader, apiKey) {
     if (!isLeader(interaction)) return interaction.reply({ content: 'Only leaders can use this command.', flags });
     await interaction.deferReply({ flags });
     try {
-      if (!apiKey) return interaction.editReply('MightPulse API key is not configured.');
       const players = (await getEggPlayers()).sort((a, b) => (a.nickname || String(a.playerId)).localeCompare(b.nickname || String(b.playerId)));
       if (!players.length) return interaction.editReply('No EGG members found in the database.');
       for (const [id, old] of sessions) if (Date.now() - old.created > 840000) sessions.delete(id);
@@ -104,7 +104,14 @@ function createTrialPlanner(isLeader, apiKey) {
     if (!participants.length) return interaction.reply({ content: 'Select at least one participant.', flags });
     await interaction.deferReply({ flags });
     try {
-      const scores = await fetchMigrantScores(participants.map(p => String(p.playerId)), apiKey);
+      const scores = await resolveMigrantScores(participants.map(p => String(p.playerId)), {
+        readCache: getMigrantScoreCache,
+        fetchScores: ids => {
+          if (!apiKey) throw new Error('MightPulse API key is not configured.');
+          return fetchMigrantScores(ids, apiKey);
+        },
+        saveCache: saveMigrantScoreCache
+      });
       const missing = participants.filter(p => !scores.has(String(p.playerId)));
       const lanes = assignLanes(participants.map(p => ({ ...p, score: scores.get(String(p.playerId)) })));
       const lines = formatPlan(s.blueprint, interaction.fields.getTextInputValue('header').trim(), lanes);
@@ -114,7 +121,7 @@ function createTrialPlanner(isLeader, apiKey) {
       if (chunk) chunks.push(chunk);
       await interaction.editReply({ content: chunks[0], allowedMentions: { parse: [] } });
       for (const content of chunks.slice(1)) await interaction.followUp({ content, flags, allowedMentions: { parse: [] } });
-    } catch (error) { console.error('Trial planner scores:', error); await interaction.editReply('MightPulse request failed. Please try again later.'); }
+    } catch (error) { console.error('Trial planner scores:', error); await interaction.editReply('Could not load or save migrant scores. Please try again later.'); }
   }
   return { command, select, button, submit };
 }

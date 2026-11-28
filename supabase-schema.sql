@@ -44,6 +44,14 @@ alter table public.gift_code_players add column if not exists power bigint;
 alter table public.gift_code_players add column if not exists alliance_tag text not null default '';
 alter table public.gift_code_players add column if not exists alliance_name text not null default '';
 
+create table if not exists public.migrant_score_cache (
+  player_id text primary key references public.gift_code_players(player_id) on delete cascade,
+  score bigint not null,
+  score_date date not null
+);
+alter table public.migrant_score_cache enable row level security;
+grant select, insert, update, delete on table public.migrant_score_cache to service_role;
+
 create table if not exists public.alliance_weekly_power_snapshots (
   week_start date not null,
   player_id text not null,

@@ -261,6 +261,21 @@ async function getEggPlayers() {
   return (data || []).map(mapGiftCodePlayerRow);
 }
 
+async function getMigrantScoreCache(playerIds) {
+  if (!playerIds.length) return [];
+  const { data, error } = await supabase.from('migrant_score_cache')
+    .select('player_id,score,score_date').in('player_id', playerIds);
+  if (error) throw error;
+  return data || [];
+}
+
+async function saveMigrantScoreCache(scores, scoreDate) {
+  if (!scores.size) return;
+  const rows = [...scores].map(([playerId, score]) => ({ player_id: String(playerId), score, score_date: scoreDate }));
+  const { error } = await supabase.from('migrant_score_cache').upsert(rows, { onConflict: 'player_id' });
+  if (error) throw error;
+}
+
 async function getGiftCodePlayersForKingdom(kingdomId) {
   const { data, error } = await supabase
     .from('gift_code_players')
@@ -568,6 +583,8 @@ module.exports = {
   upsertGiftCodePlayers,
   getGiftCodePlayers,
   getEggPlayers,
+  getMigrantScoreCache,
+  saveMigrantScoreCache,
   getGiftCodePlayersForKingdom,
   getGiftCodePlayer,
   updateGiftCodePlayerNickname,
