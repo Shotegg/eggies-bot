@@ -18,6 +18,25 @@ function assignLanes(players) {
   return lanes;
 }
 
+function formatPlan(blueprint, header, lanes) {
+  if (blueprint === 'ryu') {
+    const parts = header.split(/\s+-\s+/, 2);
+    const heading = parts.length === 2 ? '**' + parts[0] + '** - **' + parts[1] + '**' : '**' + header + '**';
+    const lines = ['👥 ' + heading];
+    for (const [key, title] of [['hard', '🟡  **Team 1 – Left Lane**'], ['middle', '🔴 **Team 2 – Middle Lane**'], ['easy', '🔵 **Team 3 – Right Lane**']]) {
+      const players = lanes[key];
+      const names = group => group.map(p => p.nickname || p.playerId).join(', ');
+      lines.push('', title, '- **Attacker:** ' + names(players.slice(0, 2)), '- **Supporter:** ' + names(players.slice(2, 4)), '- **Defender:** ' + names(players.slice(4)));
+    }
+    return lines;
+  }
+  const lines = ['👥 ' + header];
+  for (const [key, title] of [['hard', '🟡 Hard lane'], ['middle', '🔴 Middle lane'], ['easy', '🔵 Easy lane']]) {
+    lines.push('', title, ...lanes[key].map((p, i) => (i + 1) + '. ' + (p.nickname || p.playerId)));
+  }
+  return lines;
+}
+
 function createTrialPlanner(isLeader, apiKey) {
   const sessions = new Map();
   const flags = MessageFlags.Ephemeral;
@@ -50,9 +69,12 @@ function createTrialPlanner(isLeader, apiKey) {
       const players = (await getEggPlayers()).sort((a, b) => (a.nickname || String(a.playerId)).localeCompare(b.nickname || String(b.playerId)));
       if (!players.length) return interaction.editReply('No EGG members found in the database.');
       for (const [id, old] of sessions) if (Date.now() - old.created > 840000) sessions.delete(id);
-      const s = { id: randomUUID(), userId: interaction.user.id, players, selected: new Set(players.map(p => String(p.playerId))), page: 0, created: Date.now() };
+      const s = { id: randomUUID(), userId: interaction.user.id, players, selected: new Set(players.map(p => String(p.playerId))), page: 0, created: Date.now(), blueprint: null };
       sessions.set(s.id, s);
-      await interaction.editReply(render(s));
+      await interaction.editReply({ content: 'Choose blueprint', components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('trial:ooo:' + s.id).setLabel('ooo').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('trial:ryu:' + s.id).setLabel('ryu').setStyle(ButtonStyle.Primary)
+      )] });
     } catch (error) { console.error('Trial planner:', error); await interaction.editReply('Could not load EGG members. Please try again.'); }
   }
   async function select(interaction) {
@@ -64,11 +86,15 @@ function createTrialPlanner(isLeader, apiKey) {
   async function button(interaction) {
     const s = await session(interaction); if (!s) return;
     const action = interaction.customId.split(':')[1];
+    if (action === 'ooo' || action === 'ryu') {
+      s.blueprint = action;
+      return interaction.update(render(s));
+    }
     if (action === 'prev' || action === 'next') {
       s.page = Math.max(0, Math.min(s.page + (action === 'prev' ? -1 : 1), Math.ceil(s.players.length / 25) - 1));
       return interaction.update(render(s));
     }
-    if (!s.selected.size) return interaction.reply({ content: 'Select at least one participant.', flags });
+    if (action !== 'plan' || !s.blueprint || !s.selected.size) return interaction.reply({ content: 'Choose a blueprint and select at least one participant.', flags });
     const input = new TextInputBuilder().setCustomId('header').setLabel('Legion, date and time (UTC)').setPlaceholder('Legion 2 - 31.10. at 14 UTC').setStyle(TextInputStyle.Short).setMaxLength(100).setRequired(true);
     return interaction.showModal(new ModalBuilder().setCustomId('trial:submit:' + s.id).setTitle('Trial of Alliance planner').addComponents(new ActionRowBuilder().addComponents(input)));
   }
@@ -81,10 +107,7 @@ function createTrialPlanner(isLeader, apiKey) {
       const scores = await fetchMigrantScores(participants.map(p => String(p.playerId)), apiKey);
       const missing = participants.filter(p => !scores.has(String(p.playerId)));
       const lanes = assignLanes(participants.map(p => ({ ...p, score: scores.get(String(p.playerId)) })));
-      const lines = ['👥 ' + interaction.fields.getTextInputValue('header').trim()];
-      for (const [key, title] of [['hard', '🟡 Hard lane'], ['middle', '🔴 Middle lane'], ['easy', '🔵 Easy lane']]) {
-        lines.push('', title, ...lanes[key].map((p, i) => (i + 1) + '. ' + (p.nickname || p.playerId)));
-      }
+      const lines = formatPlan(s.blueprint, interaction.fields.getTextInputValue('header').trim(), lanes);
       if (missing.length) lines.push('', "Didn't find migrant score for:", ...missing.map(p => '- ' + (p.nickname || p.playerId)));
       const chunks = []; let chunk = '';
       for (const line of lines) { if (chunk.length + line.length + 1 > 1900) { chunks.push(chunk); chunk = ''; } chunk += (chunk ? '\n' : '') + line; }
@@ -95,4 +118,4 @@ function createTrialPlanner(isLeader, apiKey) {
   }
   return { command, select, button, submit };
 }
-module.exports = { createTrialPlanner, assignLanes };
+module.exports = { createTrialPlanner, assignLanes, formatPlan };
